@@ -19,6 +19,13 @@ spring:
         format_sql: true
     open-in-view: false
 
+app:
+  jwt:
+    # En produccion, JWT_SECRET debe venir de una variable de entorno/secret manager,
+    # nunca del valor por defecto. Minimo 32 caracteres para HS256.
+    secret: ${JWT_SECRET:change-this-secret-in-production-min-32-characters}
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+
 logging:
   level:
     org.hibernate.SQL: info
