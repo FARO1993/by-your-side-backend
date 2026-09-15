@@ -15,6 +15,7 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
 
     @Query("""
             SELECT p FROM Post p
+            JOIN FETCH p.author
             WHERE p.author.id IN :followedUserIds
             AND p.status = 'VISIBLE'
             AND p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
