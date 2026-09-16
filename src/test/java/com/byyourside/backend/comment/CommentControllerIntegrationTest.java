@@ -23,8 +23,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.UUID;
 
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -57,6 +56,7 @@ class CommentControllerIntegrationTest {
     private User facu;
     private Post post;
     private String facuToken;
+    private String moderatorToken;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -64,8 +64,11 @@ class CommentControllerIntegrationTest {
         postRepository.deleteAll();
         userRepository.deleteAll();
 
-        facu = registerUser("facu", "facu@example.com");
+        facu = registerUser("facu", "facu@example.com", UserRole.USER);
         facuToken = login("facu");
+
+        registerUser("moderator", "moderator@example.com", UserRole.MODERATOR);
+        moderatorToken = login("moderator");
 
         post = postRepository.save(Post.builder()
                 .author(facu)
@@ -74,13 +77,13 @@ class CommentControllerIntegrationTest {
                 .build());
     }
 
-    private User registerUser(String username, String email) {
+    private User registerUser(String username, String email, UserRole role) {
         User user = User.builder()
                 .username(username)
                 .email(email)
                 .passwordHash(passwordEncoder.encode("secretpass123"))
                 .displayName(username)
-                .role(UserRole.USER)
+                .role(role)
                 .status(UserStatus.ACTIVE)
                 .build();
         return userRepository.save(user);
@@ -102,6 +105,16 @@ class CommentControllerIntegrationTest {
 
     private record LoginPayload(String username, String password) {
     }
+
+    private Comment createComment(String content) {
+        return commentRepository.save(Comment.builder()
+                .post(post)
+                .author(facu)
+                .content(content)
+                .build());
+    }
+
+    // --- tests existentes (create, list) ---
 
     @Test
     void shouldCreateComment_whenAuthenticated() throws Exception {
@@ -179,7 +192,7 @@ class CommentControllerIntegrationTest {
 
     @Test
     void shouldExcludeRemovedComments_fromListing() throws Exception {
-        Comment visible = createComment("comentario visible");
+        createComment("comentario visible");
         Comment removed = createComment("comentario moderado");
         removed.setStatus(CommentStatus.REMOVED);
         commentRepository.save(removed);
@@ -191,11 +204,86 @@ class CommentControllerIntegrationTest {
                 .andExpect(jsonPath("$[0].content").value("comentario visible"));
     }
 
-    private Comment createComment(String content) {
-        return commentRepository.save(Comment.builder()
-                .post(post)
+    // --- tests nuevos: update / delete ---
+
+    @Test
+    void shouldUpdateComment_whenAuthenticatedAsAuthor() throws Exception {
+        Comment comment = createComment("contenido original");
+
+        mockMvc.perform(patch("/api/posts/{postId}/comments/{commentId}", post.getId(), comment.getId())
+                        .header("Authorization", "Bearer " + facuToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"content": "contenido editado"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").value("contenido editado"));
+    }
+
+    @Test
+    void shouldReturnForbidden_whenUpdatingSomeoneElsesComment() throws Exception {
+        User otro = registerUser("otro", "otro@example.com", UserRole.USER);
+        String otroToken = login("otro");
+
+        Comment comment = createComment("comentario de facu");
+
+        mockMvc.perform(patch("/api/posts/{postId}/comments/{commentId}", post.getId(), comment.getId())
+                        .header("Authorization", "Bearer " + otroToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"content": "intento editar algo que no es mio"}
+                                """))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void shouldReturnNotFound_whenCommentDoesNotBelongToPost() throws Exception {
+        Post otherPost = postRepository.save(Post.builder()
                 .author(facu)
-                .content(content)
+                .content("otro post")
+                .visibility(PostVisibility.PUBLIC)
                 .build());
+        Comment comment = createComment("comentario del post original");
+
+        mockMvc.perform(patch("/api/posts/{postId}/comments/{commentId}", otherPost.getId(), comment.getId())
+                        .header("Authorization", "Bearer " + facuToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"content": "no deberia funcionar"}
+                                """))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void shouldDeleteComment_whenAuthenticatedAsAuthor() throws Exception {
+        Comment comment = createComment("comentario a borrar");
+
+        mockMvc.perform(delete("/api/posts/{postId}/comments/{commentId}", post.getId(), comment.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isNoContent());
+
+        Comment deleted = commentRepository.findById(comment.getId()).orElseThrow();
+        assert deleted.getStatus() == CommentStatus.REMOVED;
+    }
+
+    @Test
+    void shouldAllowModeratorToDeleteAnyComment() throws Exception {
+        Comment comment = createComment("comentario ajeno al moderador");
+
+        mockMvc.perform(delete("/api/posts/{postId}/comments/{commentId}", post.getId(), comment.getId())
+                        .header("Authorization", "Bearer " + moderatorToken))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void shouldReturnForbidden_whenNonAuthorNonModeratorDeletesComment() throws Exception {
+        User otro = registerUser("otro", "otro@example.com", UserRole.USER);
+        String otroToken = login("otro");
+
+        Comment comment = createComment("comentario protegido");
+
+        mockMvc.perform(delete("/api/posts/{postId}/comments/{commentId}", post.getId(), comment.getId())
+                        .header("Authorization", "Bearer " + otroToken))
+                .andExpect(status().isForbidden());
     }
 }
