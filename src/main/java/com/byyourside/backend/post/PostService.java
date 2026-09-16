@@ -1,12 +1,12 @@
 package com.byyourside.backend.post;
 
 import com.byyourside.backend.follow.FollowRepository;
-import com.byyourside.backend.post.dto.AuthorSummary;
 import com.byyourside.backend.post.dto.CreatePostRequest;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
+import com.byyourside.backend.user.dto.UserSummary;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -57,7 +57,7 @@ public class PostService {
 
     private PostResponse toResponse(Post post) {
         User author = post.getAuthor();
-        AuthorSummary authorSummary = new AuthorSummary(
+        UserSummary authorSummary = new UserSummary(
                 author.getId(),
                 author.getUsername(),
                 author.getDisplayName(),
