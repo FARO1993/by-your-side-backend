@@ -1,6 +1,8 @@
 package com.byyourside.backend.user;
 
+import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.user.dto.PublicUserProfileResponse;
 import com.byyourside.backend.user.dto.UpdateProfileRequest;
 import com.byyourside.backend.user.dto.UserResponse;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +18,7 @@ import java.util.UUID;
 public class UserService {
 
     private final UserRepository userRepository;
+    private final FollowRepository followRepository;
 
     public UserResponse getCurrentUser(UserPrincipal principal) {
         User user = findByIdOrThrow(principal.getId());
@@ -53,6 +56,28 @@ public class UserService {
         target.setRole(newRole);
         target = userRepository.save(target);
         return toResponse(target);
+    }
+
+    public PublicUserProfileResponse getPublicProfile(UserPrincipal principal, UUID userId) {
+        User target = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+
+        long followersCount = followRepository.countByFollowingId(userId);
+        long followingCount = followRepository.countByFollowerId(userId);
+        boolean followedByCurrentUser = !principal.getId().equals(userId)
+                && followRepository.existsByFollowerIdAndFollowingId(principal.getId(), userId);
+
+        return new PublicUserProfileResponse(
+                target.getId(),
+                target.getUsername(),
+                target.getDisplayName(),
+                target.getBio(),
+                target.getAvatarUrl(),
+                target.getCreatedAt(),
+                followersCount,
+                followingCount,
+                followedByCurrentUser
+        );
     }
 
 

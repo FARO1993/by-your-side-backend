@@ -109,6 +109,24 @@ public class PostService {
         postRepository.save(post);
     }
 
+    public Page<PostResponse> getUserPosts(UserPrincipal principal, UUID authorId, Pageable pageable) {
+        if (!userRepository.existsById(authorId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+        }
+
+        boolean isOwner = principal.getId().equals(authorId);
+        boolean isFollower = isOwner
+                || followRepository.existsByFollowerIdAndFollowingId(principal.getId(), authorId);
+
+        Page<Post> postsPage = postRepository.findVisiblePostsByAuthor(authorId, isFollower, isOwner, pageable);
+
+        // Todos los posts de esta pagina son del mismo autor, asi que el set
+        // de "autores seguidos" es trivial: o esta el autor, o no esta.
+        Set<UUID> followedAuthorIds = isFollower ? Set.of(authorId) : Set.of();
+
+        return postsPage.map(post -> toResponse(post, followedAuthorIds));
+    }
+
     private PostResponse toResponse(Post post, Set<UUID> followedAuthorIds) {
         User author = post.getAuthor();
         UserSummary authorSummary = new UserSummary(

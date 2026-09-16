@@ -13,6 +13,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.util.UUID;
+
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -62,6 +64,31 @@ class UserControllerIntegrationTest {
         token = objectMapper.readTree(response).get("token").asText();
     }
 
+    private User registerUser(String username, String email, UserRole role) throws Exception {
+        String registerBody = """
+                {
+                    "username": "%s",
+                    "email": "%s",
+                    "password": "secretpass123",
+                    "displayName": "%s"
+                }
+                """.formatted(username, email, username);
+
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(registerBody))
+                .andExpect(status().isCreated());
+
+        User user = userRepository.findByUsername(username).orElseThrow();
+
+        if (role != UserRole.USER) {
+            user.setRole(role);
+            user = userRepository.save(user);
+        }
+
+        return user;
+    }
+
     @Test
     void shouldReturnCurrentUser_whenTokenIsValid() throws Exception {
         mockMvc.perform(get("/api/users/me")
@@ -101,7 +128,6 @@ class UserControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bio").value("Building ByYourSide"))
                 .andExpect(jsonPath("$.avatarUrl").value("https://example.com/avatar.png"))
-                // el resto del perfil no deberia cambiar por una edicion parcial
                 .andExpect(jsonPath("$.username").value("facu"));
     }
 
@@ -117,5 +143,24 @@ class UserControllerIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(updateBody))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void shouldReturnPublicProfile_ofAnotherUser() throws Exception {
+        User other = registerUser("soumia", "soumia@example.com", UserRole.USER);
+
+        mockMvc.perform(get("/api/users/{userId}", other.getId())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.username").value("soumia"))
+                .andExpect(jsonPath("$.followedByCurrentUser").value(false))
+                .andExpect(jsonPath("$.followersCount").value(0));
+    }
+
+    @Test
+    void shouldReturnNotFound_whenViewingNonexistentProfile() throws Exception {
+        mockMvc.perform(get("/api/users/{userId}", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound());
     }
 }
