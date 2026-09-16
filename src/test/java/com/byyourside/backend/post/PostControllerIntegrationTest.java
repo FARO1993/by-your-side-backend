@@ -304,4 +304,28 @@ class PostControllerIntegrationTest {
                         .header("Authorization", "Bearer " + otherUserToken))
                 .andExpect(status().isForbidden());
     }
+
+    @Test
+    void shouldMarkFollowedByCurrentUser_whenFollowingTheAuthor() throws Exception {
+        User otherUser = registerUser("soumia", "soumia@example.com");
+        String otherUserToken = login("soumia", "secretpass123");
+
+        followRepository.save(Follow.builder().follower(mainUser).following(otherUser).build());
+        createPost(otherUserToken, "post de soumia");
+
+        mockMvc.perform(get("/api/posts/feed")
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].followedByCurrentUser").value(true));
+    }
+
+    @Test
+    void shouldMarkNotFollowedByCurrentUser_forOwnPosts() throws Exception {
+        createPost(mainUserToken, "mi propio post");
+
+        mockMvc.perform(get("/api/posts/feed")
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].followedByCurrentUser").value(false));
+    }
 }

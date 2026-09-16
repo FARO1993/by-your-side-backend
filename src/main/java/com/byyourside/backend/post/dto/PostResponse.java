@@ -11,6 +11,7 @@ public record PostResponse(
         String content,
         String visibility,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        boolean followedByCurrentUser
 ) {
 }

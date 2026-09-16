@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -41,7 +42,11 @@ public class PostService {
                 .build();
 
         post = postRepository.save(post);
-        return toResponse(post);
+        // Es tu propio post: nunca te seguis a vos mismo, asi que este campo
+        // siempre es false aca. El frontend ya oculta el boton de "Seguir"
+        // en posts propios comparando el id del autor con el usuario actual,
+        // no depende de este valor para eso.
+        return toResponse(post, Set.of());
     }
 
     public Page<PostResponse> getFeed(UserPrincipal principal, Pageable pageable) {
@@ -49,11 +54,20 @@ public class PostService {
                 .map(follow -> follow.getFollowing().getId())
                 .collect(Collectors.toList());
 
-        // El feed incluye tus propios posts, ademas de los de la gente que seguis.
         feedAuthorIds.add(principal.getId());
 
-        return postRepository.findFeedForUser(feedAuthorIds, pageable)
-                .map(this::toResponse);
+        Page<Post> postsPage = postRepository.findFeedForUser(feedAuthorIds, pageable);
+
+        List<UUID> authorIdsInPage = postsPage.getContent().stream()
+                .map(post -> post.getAuthor().getId())
+                .distinct()
+                .toList();
+
+        Set<UUID> followedAuthorIds = authorIdsInPage.isEmpty()
+                ? Set.of()
+                : Set.copyOf(followRepository.findFollowingIdsAmong(principal.getId(), authorIdsInPage));
+
+        return postsPage.map(post -> toResponse(post, followedAuthorIds));
     }
 
     @Transactional
@@ -73,7 +87,10 @@ public class PostService {
         }
 
         post = postRepository.save(post);
-        return toResponse(post);
+        // Editas tu propio post (ya validado arriba) -- nunca te seguis a
+        // vos mismo, asi que followedByCurrentUser siempre es false aca.
+        // Mismo caso que createPost.
+        return toResponse(post, Set.of());
     }
 
     @Transactional
@@ -92,7 +109,7 @@ public class PostService {
         postRepository.save(post);
     }
 
-    private PostResponse toResponse(Post post) {
+    private PostResponse toResponse(Post post, Set<UUID> followedAuthorIds) {
         User author = post.getAuthor();
         UserSummary authorSummary = new UserSummary(
                 author.getId(),
@@ -107,7 +124,8 @@ public class PostService {
                 post.getContent(),
                 post.getVisibility().name(),
                 post.getCreatedAt(),
-                post.getUpdatedAt()
+                post.getUpdatedAt(),
+                followedAuthorIds.contains(author.getId())
         );
     }
 }
