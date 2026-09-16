@@ -2,6 +2,7 @@ package com.byyourside.backend.comment;
 
 import com.byyourside.backend.comment.dto.CommentResponse;
 import com.byyourside.backend.comment.dto.CreateCommentRequest;
+import com.byyourside.backend.comment.dto.UpdateCommentRequest;
 import com.byyourside.backend.post.Post;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.security.UserPrincipal;
@@ -52,6 +53,43 @@ public class CommentService {
         return commentRepository.findVisibleCommentsByPostId(postId).stream()
                 .map(this::toResponse)
                 .toList();
+    }
+
+    @Transactional
+    public CommentResponse updateComment(UserPrincipal principal, UUID postId, UUID commentId, UpdateCommentRequest request) {
+        Comment comment = commentRepository.findById(commentId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Comment not found"));
+
+        if (!comment.getPost().getId().equals(postId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Comment not found");
+        }
+        if (!comment.getAuthor().getId().equals(principal.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You can only edit your own comments");
+        }
+
+        comment.setContent(request.content());
+        comment = commentRepository.save(comment);
+        return toResponse(comment);
+    }
+
+    @Transactional
+    public void deleteComment(UserPrincipal principal, UUID postId, UUID commentId) {
+        Comment comment = commentRepository.findById(commentId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Comment not found"));
+
+        if (!comment.getPost().getId().equals(postId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Comment not found");
+        }
+
+        boolean isAuthor = comment.getAuthor().getId().equals(principal.getId());
+        boolean isModerator = principal.getRole().equals("MODERATOR") || principal.getRole().equals("ADMIN");
+
+        if (!isAuthor && !isModerator) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You don't have permission to delete this comment");
+        }
+
+        comment.setStatus(CommentStatus.REMOVED);
+        commentRepository.save(comment);
     }
 
     private CommentResponse toResponse(Comment comment) {

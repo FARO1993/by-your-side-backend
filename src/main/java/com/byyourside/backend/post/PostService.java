@@ -3,6 +3,7 @@ package com.byyourside.backend.post;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.post.dto.CreatePostRequest;
 import com.byyourside.backend.post.dto.PostResponse;
+import com.byyourside.backend.post.dto.UpdatePostRequest;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -53,6 +54,42 @@ public class PostService {
 
         return postRepository.findFeedForUser(feedAuthorIds, pageable)
                 .map(this::toResponse);
+    }
+
+    @Transactional
+    public PostResponse updatePost(UserPrincipal principal, UUID postId, UpdatePostRequest request) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found"));
+
+        if (!post.getAuthor().getId().equals(principal.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You can only edit your own posts");
+        }
+
+        if (request.content() != null) {
+            post.setContent(request.content());
+        }
+        if (request.visibility() != null) {
+            post.setVisibility(request.visibility());
+        }
+
+        post = postRepository.save(post);
+        return toResponse(post);
+    }
+
+    @Transactional
+    public void deletePost(UserPrincipal principal, UUID postId) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found"));
+
+        boolean isAuthor = post.getAuthor().getId().equals(principal.getId());
+        boolean isModerator = principal.getRole().equals("MODERATOR") || principal.getRole().equals("ADMIN");
+
+        if (!isAuthor && !isModerator) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You don't have permission to delete this post");
+        }
+
+        post.setStatus(PostStatus.REMOVED);
+        postRepository.save(post);
     }
 
     private PostResponse toResponse(Post post) {
