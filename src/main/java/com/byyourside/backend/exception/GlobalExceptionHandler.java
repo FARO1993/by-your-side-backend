@@ -127,4 +127,18 @@ public class GlobalExceptionHandler {
         );
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
     }
+
+    // Body mal formado: JSON invalido, tipo que no matchea (ej. UUID con formato incorrecto,
+    // enum con un valor que no existe, numero donde se esperaba texto, etc.)
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleMalformedBody(HttpServletRequest request) {
+        ErrorResponse body = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
+                "Malformed request body",
+                request.getRequestURI()
+        );
+        return ResponseEntity.badRequest().body(body);
+    }
 }
