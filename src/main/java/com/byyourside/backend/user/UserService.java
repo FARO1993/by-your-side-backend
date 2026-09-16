@@ -6,7 +6,10 @@ import com.byyourside.backend.user.dto.UserResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
+
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -35,6 +38,23 @@ public class UserService {
         user = userRepository.save(user);
         return toResponse(user);
     }
+
+    @Transactional
+    public UserResponse updateRole(UUID targetUserId, UserRole newRole) {
+        User target = findByIdOrThrow(targetUserId);
+
+        // Evita que la cola de moderacion se quede sin nadie que pueda resolverla.
+        if (target.getRole() == UserRole.ADMIN && newRole != UserRole.ADMIN) {
+            if (userRepository.countByRole(UserRole.ADMIN) <= 1) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Cannot remove the last remaining admin");
+            }
+        }
+
+        target.setRole(newRole);
+        target = userRepository.save(target);
+        return toResponse(target);
+    }
+
 
     private User findByIdOrThrow(java.util.UUID id) {
         return userRepository.findById(id)

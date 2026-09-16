@@ -25,6 +25,7 @@ app:
     # nunca del valor por defecto. Minimo 32 caracteres para HS256.
     secret: ${JWT_SECRET:change-this-secret-in-production-min-32-characters}
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+    admin-bootstrap-username: ${ADMIN_BOOTSTRAP_USERNAME:}
 
 logging:
   level:
