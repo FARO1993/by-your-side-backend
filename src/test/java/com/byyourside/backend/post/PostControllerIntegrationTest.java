@@ -328,4 +328,43 @@ class PostControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[0].followedByCurrentUser").value(false));
     }
+
+    @Test
+    void shouldReturnOnlyPublicPosts_whenViewingNonFollowedUserProfile() throws Exception {
+        User other = registerUser("soumia", "soumia@example.com");
+        String otherToken = login("soumia", "secretpass123");
+
+        createPost(otherToken, "post publico");
+        // Post FOLLOWERS_ONLY: se crea directo por repositorio para setear visibility
+        postRepository.save(Post.builder()
+                .author(other)
+                .content("post solo para seguidores")
+                .visibility(PostVisibility.FOLLOWERS_ONLY)
+                .build());
+
+        mockMvc.perform(get("/api/users/{userId}/posts", other.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].content").value("post publico"));
+    }
+
+    @Test
+    void shouldReturnFollowersOnlyPosts_whenFollowingTheAuthor() throws Exception {
+        User other = registerUser("soumia", "soumia@example.com");
+        String otherToken = login("soumia", "secretpass123");
+
+        followRepository.save(Follow.builder().follower(mainUser).following(other).build());
+
+        postRepository.save(Post.builder()
+                .author(other)
+                .content("post solo para seguidores")
+                .visibility(PostVisibility.FOLLOWERS_ONLY)
+                .build());
+
+        mockMvc.perform(get("/api/users/{userId}/posts", other.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1));
+    }
 }

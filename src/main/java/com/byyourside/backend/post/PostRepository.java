@@ -22,4 +22,21 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
             ORDER BY p.createdAt DESC
             """)
     Page<Post> findFeedForUser(@Param("followedUserIds") List<UUID> followedUserIds, Pageable pageable);
+
+    @Query("""
+            SELECT p FROM Post p
+            JOIN FETCH p.author
+            WHERE p.author.id = :authorId
+            AND p.status = 'VISIBLE'
+            AND (
+                p.visibility = 'PUBLIC'
+                OR (p.visibility = 'FOLLOWERS_ONLY' AND :canSeeFollowersOnly = true)
+                OR (p.visibility = 'PRIVATE' AND :isOwner = true)
+            )
+            ORDER BY p.createdAt DESC
+            """)
+    Page<Post> findVisiblePostsByAuthor(@Param("authorId") UUID authorId,
+                                        @Param("canSeeFollowersOnly") boolean canSeeFollowersOnly,
+                                        @Param("isOwner") boolean isOwner,
+                                        Pageable pageable);
 }
