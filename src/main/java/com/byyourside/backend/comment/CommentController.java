@@ -2,6 +2,7 @@ package com.byyourside.backend.comment;
 
 import com.byyourside.backend.comment.dto.CommentResponse;
 import com.byyourside.backend.comment.dto.CreateCommentRequest;
+import com.byyourside.backend.comment.dto.UpdateCommentRequest;
 import com.byyourside.backend.security.UserPrincipal;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -31,5 +32,21 @@ public class CommentController {
     @GetMapping
     public ResponseEntity<List<CommentResponse>> getComments(@PathVariable UUID postId) {
         return ResponseEntity.ok(commentService.getComments(postId));
+    }
+
+    @PatchMapping("/{commentId}")
+    public ResponseEntity<CommentResponse> updateComment(@AuthenticationPrincipal UserPrincipal principal,
+                                                         @PathVariable UUID postId,
+                                                         @PathVariable UUID commentId,
+                                                         @Valid @RequestBody UpdateCommentRequest request) {
+        return ResponseEntity.ok(commentService.updateComment(principal, postId, commentId, request));
+    }
+
+    @DeleteMapping("/{commentId}")
+    public ResponseEntity<Void> deleteComment(@AuthenticationPrincipal UserPrincipal principal,
+                                              @PathVariable UUID postId,
+                                              @PathVariable UUID commentId) {
+        commentService.deleteComment(principal, postId, commentId);
+        return ResponseEntity.noContent().build();
     }
 }
