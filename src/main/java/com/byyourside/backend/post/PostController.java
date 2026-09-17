@@ -4,6 +4,8 @@ import com.byyourside.backend.post.dto.CreatePostRequest;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.post.dto.UpdatePostRequest;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.support.PostSupportService;
+import com.byyourside.backend.support.dto.SupportSummaryResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -22,6 +24,8 @@ import java.util.UUID;
 public class PostController {
 
     private final PostService postService;
+
+    private final PostSupportService postSupportService;
 
     @PostMapping
     public ResponseEntity<PostResponse> createPost(@AuthenticationPrincipal UserPrincipal principal,
@@ -50,5 +54,18 @@ public class PostController {
                                            @PathVariable UUID postId) {
         postService.deletePost(principal, postId);
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{postId}/support")
+    public ResponseEntity<SupportSummaryResponse> supportPost(@AuthenticationPrincipal UserPrincipal principal,
+                                                              @PathVariable UUID postId) {
+        SupportSummaryResponse response = postSupportService.addSupport(principal, postId);
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+
+    @DeleteMapping("/{postId}/support")
+    public ResponseEntity<SupportSummaryResponse> unsupportPost(@AuthenticationPrincipal UserPrincipal principal,
+                                                                @PathVariable UUID postId) {
+        return ResponseEntity.ok(postSupportService.removeSupport(principal, postId));
     }
 }

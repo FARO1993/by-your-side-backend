@@ -5,6 +5,8 @@ import com.byyourside.backend.post.dto.CreatePostRequest;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.post.dto.UpdatePostRequest;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.support.PostSupportCountProjection;
+import com.byyourside.backend.support.PostSupportRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.dto.UserSummary;
@@ -17,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -29,6 +32,7 @@ public class PostService {
     private final PostRepository postRepository;
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
+    private final PostSupportRepository postSupportRepository;
 
     @Transactional
     public PostResponse createPost(UserPrincipal principal, CreatePostRequest request) {
@@ -42,32 +46,8 @@ public class PostService {
                 .build();
 
         post = postRepository.save(post);
-        // Es tu propio post: nunca te seguis a vos mismo, asi que este campo
-        // siempre es false aca. El frontend ya oculta el boton de "Seguir"
-        // en posts propios comparando el id del autor con el usuario actual,
-        // no depende de este valor para eso.
-        return toResponse(post, Set.of());
-    }
-
-    public Page<PostResponse> getFeed(UserPrincipal principal, Pageable pageable) {
-        List<UUID> feedAuthorIds = followRepository.findByFollowerId(principal.getId()).stream()
-                .map(follow -> follow.getFollowing().getId())
-                .collect(Collectors.toList());
-
-        feedAuthorIds.add(principal.getId());
-
-        Page<Post> postsPage = postRepository.findFeedForUser(feedAuthorIds, pageable);
-
-        List<UUID> authorIdsInPage = postsPage.getContent().stream()
-                .map(post -> post.getAuthor().getId())
-                .distinct()
-                .toList();
-
-        Set<UUID> followedAuthorIds = authorIdsInPage.isEmpty()
-                ? Set.of()
-                : Set.copyOf(followRepository.findFollowingIdsAmong(principal.getId(), authorIdsInPage));
-
-        return postsPage.map(post -> toResponse(post, followedAuthorIds));
+        // Post recien creado: nunca puede tener apoyo todavia.
+        return toResponse(post, Set.of(), Map.of(), Set.of());
     }
 
     @Transactional
@@ -87,10 +67,12 @@ public class PostService {
         }
 
         post = postRepository.save(post);
-        // Editas tu propio post (ya validado arriba) -- nunca te seguis a
-        // vos mismo, asi que followedByCurrentUser siempre es false aca.
-        // Mismo caso que createPost.
-        return toResponse(post, Set.of());
+
+        // Editar no reinicia el apoyo que ya tenia el post: lo consultamos real.
+        long supportCount = postSupportRepository.countByPostId(postId);
+        boolean supported = postSupportRepository.existsByPostIdAndUserId(postId, principal.getId());
+
+        return toResponse(post, Set.of(), Map.of(postId, supportCount), supported ? Set.of(postId) : Set.of());
     }
 
     @Transactional
@@ -109,6 +91,18 @@ public class PostService {
         postRepository.save(post);
     }
 
+    public Page<PostResponse> getFeed(UserPrincipal principal, Pageable pageable) {
+        List<UUID> feedAuthorIds = followRepository.findByFollowerId(principal.getId()).stream()
+                .map(follow -> follow.getFollowing().getId())
+                .collect(Collectors.toList());
+
+        feedAuthorIds.add(principal.getId());
+
+        Page<Post> postsPage = postRepository.findFeedForUser(feedAuthorIds, pageable);
+
+        return enrichAndMap(principal, postsPage);
+    }
+
     public Page<PostResponse> getUserPosts(UserPrincipal principal, UUID authorId, Pageable pageable) {
         if (!userRepository.existsById(authorId)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
@@ -120,14 +114,44 @@ public class PostService {
 
         Page<Post> postsPage = postRepository.findVisiblePostsByAuthor(authorId, isFollower, isOwner, pageable);
 
-        // Todos los posts de esta pagina son del mismo autor, asi que el set
-        // de "autores seguidos" es trivial: o esta el autor, o no esta.
         Set<UUID> followedAuthorIds = isFollower ? Set.of(authorId) : Set.of();
-
-        return postsPage.map(post -> toResponse(post, followedAuthorIds));
+        return enrichAndMap(principal, postsPage, followedAuthorIds);
     }
 
-    private PostResponse toResponse(Post post, Set<UUID> followedAuthorIds) {
+    // Version para getFeed: calcula "seguido" por autor real, ademas del apoyo.
+    private Page<PostResponse> enrichAndMap(UserPrincipal principal, Page<Post> postsPage) {
+        List<UUID> authorIdsInPage = postsPage.getContent().stream()
+                .map(post -> post.getAuthor().getId())
+                .distinct()
+                .toList();
+
+        Set<UUID> followedAuthorIds = authorIdsInPage.isEmpty()
+                ? Set.of()
+                : Set.copyOf(followRepository.findFollowingIdsAmong(principal.getId(), authorIdsInPage));
+
+        return enrichAndMap(principal, postsPage, followedAuthorIds);
+    }
+
+    // Version compartida: recibe el set de "seguido" ya resuelto (getUserPosts
+    // lo calcula distinto, ya que todos los posts son del mismo autor) y
+    // resuelve el apoyo en batch para toda la pagina.
+    private Page<PostResponse> enrichAndMap(UserPrincipal principal, Page<Post> postsPage, Set<UUID> followedAuthorIds) {
+        List<UUID> postIds = postsPage.getContent().stream().map(Post::getId).toList();
+
+        Map<UUID, Long> supportCounts = postIds.isEmpty()
+                ? Map.of()
+                : postSupportRepository.countGroupedByPostIds(postIds).stream()
+                .collect(Collectors.toMap(PostSupportCountProjection::getPostId, PostSupportCountProjection::getSupportCount));
+
+        Set<UUID> supportedPostIds = postIds.isEmpty()
+                ? Set.of()
+                : Set.copyOf(postSupportRepository.findSupportedPostIds(principal.getId(), postIds));
+
+        return postsPage.map(post -> toResponse(post, followedAuthorIds, supportCounts, supportedPostIds));
+    }
+
+    private PostResponse toResponse(Post post, Set<UUID> followedAuthorIds,
+                                    Map<UUID, Long> supportCounts, Set<UUID> supportedPostIds) {
         User author = post.getAuthor();
         UserSummary authorSummary = new UserSummary(
                 author.getId(),
@@ -143,7 +167,9 @@ public class PostService {
                 post.getVisibility().name(),
                 post.getCreatedAt(),
                 post.getUpdatedAt(),
-                followedAuthorIds.contains(author.getId())
+                followedAuthorIds.contains(author.getId()),
+                supportCounts.getOrDefault(post.getId(), 0L),
+                supportedPostIds.contains(post.getId())
         );
     }
 }
