@@ -12,6 +12,8 @@ public record PostResponse(
         String visibility,
         Instant createdAt,
         Instant updatedAt,
-        boolean followedByCurrentUser
+        boolean followedByCurrentUser,
+        long supportCount,
+        boolean supportedByCurrentUser
 ) {
 }

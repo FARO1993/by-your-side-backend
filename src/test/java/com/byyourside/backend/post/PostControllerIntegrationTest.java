@@ -2,6 +2,7 @@ package com.byyourside.backend.post;
 
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.support.PostSupportRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -52,12 +53,16 @@ class PostControllerIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private PostSupportRepository postSupportRepository;
+
     private User mainUser;
     private String mainUserToken;
     private String moderatorToken;
 
     @BeforeEach
     void setUp() throws Exception {
+        postSupportRepository.deleteAll();
         postRepository.deleteAll();
         followRepository.deleteAll();
         userRepository.deleteAll();
@@ -366,5 +371,68 @@ class PostControllerIntegrationTest {
                         .header("Authorization", "Bearer " + mainUserToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content.length()").value(1));
+    }
+
+    @Test
+    void shouldAddSupport_whenAuthenticated() throws Exception {
+        UUID postId = createPost(mainUserToken, "post que necesita apoyo");
+
+        mockMvc.perform(post("/api/posts/{postId}/support", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.supportCount").value(1))
+                .andExpect(jsonPath("$.supportedByCurrentUser").value(true));
+    }
+
+    @Test
+    void shouldReturnConflict_whenSupportingSamePostTwice() throws Exception {
+        UUID postId = createPost(mainUserToken, "post");
+
+        mockMvc.perform(post("/api/posts/{postId}/support", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/posts/{postId}/support", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void shouldRemoveSupport_whenPreviouslySupported() throws Exception {
+        UUID postId = createPost(mainUserToken, "post");
+
+        mockMvc.perform(post("/api/posts/{postId}/support", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(delete("/api/posts/{postId}/support", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.supportCount").value(0))
+                .andExpect(jsonPath("$.supportedByCurrentUser").value(false));
+    }
+
+    @Test
+    void shouldReturnNotFound_whenRemovingSupportNeverGiven() throws Exception {
+        UUID postId = createPost(mainUserToken, "post");
+
+        mockMvc.perform(delete("/api/posts/{postId}/support", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void shouldReflectSupportCountAndFlag_inFeed() throws Exception {
+        UUID postId = createPost(mainUserToken, "post con apoyo");
+
+        mockMvc.perform(post("/api/posts/{postId}/support", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/posts/feed")
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].supportCount").value(1))
+                .andExpect(jsonPath("$.content[0].supportedByCurrentUser").value(true));
     }
 }
