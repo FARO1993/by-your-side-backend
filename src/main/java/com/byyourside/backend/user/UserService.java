@@ -2,6 +2,7 @@ package com.byyourside.backend.user;
 
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.storage.ImageStorageService;
 import com.byyourside.backend.user.dto.DiscoverUserResponse;
 import com.byyourside.backend.user.dto.PublicUserProfileResponse;
 import com.byyourside.backend.user.dto.UpdateProfileRequest;
@@ -12,8 +13,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -24,6 +27,7 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
+    private final ImageStorageService imageStorageService;
 
     public UserResponse getCurrentUser(UserPrincipal principal) {
         User user = findByIdOrThrow(principal.getId());
@@ -100,6 +104,31 @@ public class UserService {
                         user.getBio(),
                         user.getAvatarUrl()
                 ));
+    }
+
+    @Transactional
+    public UserResponse updateAvatar(UserPrincipal principal, MultipartFile file) {
+        if (file.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File is empty");
+        }
+
+        String contentType = file.getContentType();
+        if (contentType == null || !contentType.startsWith("image/")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File must be an image");
+        }
+
+        User user = findByIdOrThrow(principal.getId());
+
+        String avatarUrl;
+        try {
+            avatarUrl = imageStorageService.uploadUserAvatar(user.getId(), file);
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to upload avatar");
+        }
+
+        user.setAvatarUrl(avatarUrl);
+        user = userRepository.save(user);
+        return toResponse(user);
     }
 
 
