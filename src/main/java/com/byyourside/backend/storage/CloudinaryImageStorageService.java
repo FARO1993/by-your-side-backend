@@ -1,6 +1,7 @@
 package com.byyourside.backend.storage;
 
 import com.cloudinary.Cloudinary;
+import com.cloudinary.Transformation;
 import com.cloudinary.utils.ObjectUtils;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -18,19 +19,18 @@ public class CloudinaryImageStorageService implements ImageStorageService {
 
     @Override
     public String uploadUserAvatar(UUID userId, MultipartFile file) throws IOException {
-        // public_id fijo por usuario: cada subida nueva sobreescribe el
-        // avatar anterior en Cloudinary en vez de acumular archivos huerfanos.
+        Transformation transformation = new Transformation()
+                .width(256)
+                .height(256)
+                .crop("fill")
+                .gravity("face");
+
         Map<?, ?> result = cloudinary.uploader().upload(file.getBytes(), ObjectUtils.asMap(
                 "folder", "avatars",
                 "public_id", userId.toString(),
                 "overwrite", true,
                 "resource_type", "image",
-                "transformation", ObjectUtils.asMap(
-                        "width", 256,
-                        "height", 256,
-                        "crop", "fill",
-                        "gravity", "face"
-                )
+                "transformation", transformation
         ));
 
         return (String) result.get("secure_url");
