@@ -2,16 +2,21 @@ package com.byyourside.backend.user;
 
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.user.dto.DiscoverUserResponse;
 import com.byyourside.backend.user.dto.PublicUserProfileResponse;
 import com.byyourside.backend.user.dto.UpdateProfileRequest;
 import com.byyourside.backend.user.dto.UserResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -78,6 +83,23 @@ public class UserService {
                 followingCount,
                 followedByCurrentUser
         );
+    }
+
+    public Page<DiscoverUserResponse> discoverUsers(UserPrincipal principal, Pageable pageable) {
+        Set<UUID> excludedIds = followRepository.findByFollowerId(principal.getId()).stream()
+                .map(follow -> follow.getFollowing().getId())
+                .collect(Collectors.toSet());
+
+        excludedIds.add(principal.getId());
+
+        return userRepository.findByIdNotIn(excludedIds, pageable)
+                .map(user -> new DiscoverUserResponse(
+                        user.getId(),
+                        user.getUsername(),
+                        user.getDisplayName(),
+                        user.getBio(),
+                        user.getAvatarUrl()
+                ));
     }
 
 

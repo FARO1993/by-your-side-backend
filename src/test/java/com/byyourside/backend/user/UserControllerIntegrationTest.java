@@ -1,5 +1,7 @@
 package com.byyourside.backend.user;
 
+import com.byyourside.backend.follow.Follow;
+import com.byyourside.backend.follow.FollowRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,9 +42,13 @@ class UserControllerIntegrationTest {
 
     private String token;
 
+    @Autowired
+    private FollowRepository followRepository;
+
     @BeforeEach
     void setUp() throws Exception {
-        userRepository.deleteAll();
+        followRepository.deleteAll();   // ← primero: borra lo que referencia a users
+        userRepository.deleteAll();     // ← ahora sí, sin FKs pendientes
 
         String registerBody = """
                 {
@@ -162,5 +168,20 @@ class UserControllerIntegrationTest {
         mockMvc.perform(get("/api/users/{userId}", UUID.randomUUID())
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void shouldExcludeSelfAndFollowedUsers_fromDiscoverList() throws Exception {
+        User followed = registerUser("soumia", "soumia@example.com", UserRole.USER);
+        User notFollowed = registerUser("otro", "otro@example.com", UserRole.USER);
+
+        User me = userRepository.findByUsername("facu").orElseThrow();
+        followRepository.save(Follow.builder().follower(me).following(followed).build());
+
+        mockMvc.perform(get("/api/users/discover")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].username").value("otro"));
     }
 }

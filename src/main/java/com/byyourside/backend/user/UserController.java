@@ -3,6 +3,7 @@ package com.byyourside.backend.user;
 import com.byyourside.backend.post.PostService;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.user.dto.DiscoverUserResponse;
 import com.byyourside.backend.user.dto.PublicUserProfileResponse;
 import com.byyourside.backend.user.dto.UpdateProfileRequest;
 import com.byyourside.backend.user.dto.UserResponse;
@@ -49,5 +50,13 @@ public class UserController {
                                                            @RequestParam(defaultValue = "20") int size) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(postService.getUserPosts(principal, userId, pageable));
+    }
+
+    @GetMapping("/discover")
+    public ResponseEntity<Page<DiscoverUserResponse>> discoverUsers(@AuthenticationPrincipal UserPrincipal principal,
+                                                                    @RequestParam(defaultValue = "0") int page,
+                                                                    @RequestParam(defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return ResponseEntity.ok(userService.discoverUsers(principal, pageable));
     }
 }
