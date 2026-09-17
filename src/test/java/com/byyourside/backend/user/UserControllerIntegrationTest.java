@@ -2,14 +2,17 @@ package com.byyourside.backend.user;
 
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.storage.ImageStorageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -17,9 +20,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.UUID;
 
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -44,6 +47,9 @@ class UserControllerIntegrationTest {
 
     @Autowired
     private FollowRepository followRepository;
+
+    @MockBean
+    private ImageStorageService imageStorageService;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -183,5 +189,33 @@ class UserControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content.length()").value(1))
                 .andExpect(jsonPath("$.content[0].username").value("otro"));
+    }
+
+    @Test
+    void shouldUpdateAvatar_whenValidImageUploaded() throws Exception {
+        when(imageStorageService.uploadUserAvatar(any(UUID.class), any()))
+                .thenReturn("https://res.cloudinary.com/demo/image/upload/avatars/fake.png");
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "avatar.png", "image/png", "fake-image-bytes".getBytes()
+        );
+
+        mockMvc.perform(multipart("/api/users/me/avatar")
+                        .file(file)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.avatarUrl").value("https://res.cloudinary.com/demo/image/upload/avatars/fake.png"));
+    }
+
+    @Test
+    void shouldReturnBadRequest_whenFileIsNotAnImage() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "doc.txt", "text/plain", "not an image".getBytes()
+        );
+
+        mockMvc.perform(multipart("/api/users/me/avatar")
+                        .file(file)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest());
     }
 }
