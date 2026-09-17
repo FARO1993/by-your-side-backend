@@ -1,6 +1,8 @@
 package com.byyourside.backend.follow;
 
 import com.byyourside.backend.follow.dto.FollowResponse;
+import com.byyourside.backend.notification.NotificationService;
+import com.byyourside.backend.notification.NotificationType;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -21,6 +23,7 @@ public class FollowService {
 
     private final FollowRepository followRepository;
     private final UserRepository userRepository;
+    private final NotificationService notificationService;
 
     @Transactional
     public FollowResponse follow(UserPrincipal principal, UUID targetUserId) {
@@ -42,6 +45,8 @@ public class FollowService {
                 .follower(follower)
                 .following(following)
                 .build());
+
+        notificationService.notify(following, follower, NotificationType.NEW_FOLLOWER, null);
 
         return new FollowResponse(follower.getId(), following.getId(), follow.getCreatedAt());
     }
@@ -69,6 +74,7 @@ public class FollowService {
                 .map(f -> toSummary(f.getFollowing()))
                 .toList();
     }
+
 
     private void ensureUserExists(UUID userId) {
         if (!userRepository.existsById(userId)) {

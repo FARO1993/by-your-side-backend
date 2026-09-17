@@ -1,5 +1,7 @@
 package com.byyourside.backend.support;
 
+import com.byyourside.backend.notification.NotificationService;
+import com.byyourside.backend.notification.NotificationType;
 import com.byyourside.backend.post.Post;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.security.UserPrincipal;
@@ -22,6 +24,7 @@ public class PostSupportService {
     private final PostSupportRepository postSupportRepository;
     private final PostRepository postRepository;
     private final UserRepository userRepository;
+    private final NotificationService notificationService;
 
     @Transactional
     public SupportSummaryResponse addSupport(UserPrincipal principal, UUID postId) {
@@ -36,6 +39,8 @@ public class PostSupportService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
 
         postSupportRepository.save(PostSupport.builder().post(post).user(user).build());
+
+        notificationService.notify(post.getAuthor(), user, NotificationType.NEW_SUPPORT, postId);
 
         long count = postSupportRepository.countByPostId(postId);
         return new SupportSummaryResponse(postId, count, true);

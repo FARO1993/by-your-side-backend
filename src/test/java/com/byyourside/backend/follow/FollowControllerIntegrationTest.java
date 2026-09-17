@@ -1,5 +1,6 @@
 package com.byyourside.backend.follow;
 
+import com.byyourside.backend.notification.NotificationRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -45,12 +46,16 @@ class FollowControllerIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private NotificationRepository notificationRepository;
+
     private User facu;
     private User soumia;
     private String facuToken;
 
     @BeforeEach
     void setUp() throws Exception {
+        notificationRepository.deleteAll();
         followRepository.deleteAll();
         userRepository.deleteAll();
 
