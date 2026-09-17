@@ -6,6 +6,7 @@ import com.byyourside.backend.user.dto.UserSummary;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,22 +18,25 @@ import java.util.UUID;
 public class NotificationService {
 
     private final NotificationRepository notificationRepository;
+    private final SimpMessagingTemplate messagingTemplate;
 
     // Metodo interno, llamado desde otros services (follow, comment, support)
     // cuando ocurre la accion correspondiente -- no expuesto via controller.
     @Transactional
     public void notify(User recipient, User actor, NotificationType type, UUID postId) {
-        // Nunca te notificas a vos mismo (ej. comentar tu propio post).
         if (recipient.getId().equals(actor.getId())) {
             return;
         }
 
-        notificationRepository.save(Notification.builder()
+        Notification notification = notificationRepository.save(Notification.builder()
                 .recipient(recipient)
                 .actor(actor)
                 .type(type)
                 .postId(postId)
                 .build());
+
+        NotificationResponse response = toResponse(notification);
+        messagingTemplate.convertAndSendToUser(recipient.getUsername(), "/queue/notifications", response);
     }
 
     public Page<NotificationResponse> getNotifications(UUID recipientId, Pageable pageable) {
