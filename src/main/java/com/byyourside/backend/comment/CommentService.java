@@ -3,6 +3,8 @@ package com.byyourside.backend.comment;
 import com.byyourside.backend.comment.dto.CommentResponse;
 import com.byyourside.backend.comment.dto.CreateCommentRequest;
 import com.byyourside.backend.comment.dto.UpdateCommentRequest;
+import com.byyourside.backend.notification.NotificationService;
+import com.byyourside.backend.notification.NotificationType;
 import com.byyourside.backend.post.Post;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.security.UserPrincipal;
@@ -26,6 +28,7 @@ public class CommentService {
     private final CommentRepository commentRepository;
     private final PostRepository postRepository;
     private final UserRepository userRepository;
+    private final NotificationService notificationService;
 
     @Transactional
     public CommentResponse createComment(UserPrincipal principal, UUID postId, CreateCommentRequest request) {
@@ -42,6 +45,9 @@ public class CommentService {
                 .build();
 
         comment = commentRepository.save(comment);
+
+        notificationService.notify(post.getAuthor(), author, NotificationType.NEW_COMMENT, postId);
+
         return toResponse(comment);
     }
 
