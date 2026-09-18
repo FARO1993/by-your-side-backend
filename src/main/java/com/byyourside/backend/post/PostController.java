@@ -68,4 +68,10 @@ public class PostController {
                                                                 @PathVariable UUID postId) {
         return ResponseEntity.ok(postSupportService.removeSupport(principal, postId));
     }
+
+    @GetMapping("/{postId}")
+    public ResponseEntity<PostResponse> getPost(@AuthenticationPrincipal UserPrincipal principal,
+                                                @PathVariable UUID postId) {
+        return ResponseEntity.ok(postService.getPost(principal, postId));
+    }
 }
