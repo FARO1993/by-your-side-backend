@@ -435,4 +435,48 @@ class PostControllerIntegrationTest {
                 .andExpect(jsonPath("$.content[0].supportCount").value(1))
                 .andExpect(jsonPath("$.content[0].supportedByCurrentUser").value(true));
     }
+
+    @Test
+    void shouldReturnPost_whenPublic() throws Exception {
+        UUID postId = createPost(mainUserToken, "post publico");
+
+        mockMvc.perform(get("/api/posts/{postId}", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").value("post publico"));
+    }
+
+    @Test
+    void shouldReturnNotFound_whenPrivatePostViewedByNonOwner() throws Exception {
+        User other = registerUser("otro", "otro@example.com");
+        String otherToken = login("otro", "secretpass123");
+
+        Post privatePost = postRepository.save(Post.builder()
+                .author(other)
+                .content("post privado")
+                .visibility(PostVisibility.PRIVATE)
+                .build());
+
+        mockMvc.perform(get("/api/posts/{postId}", privatePost.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void shouldReturnFollowersOnlyPost_whenFollowingAuthor() throws Exception {
+        User other = registerUser("soumia", "soumia@example.com");
+
+        followRepository.save(Follow.builder().follower(mainUser).following(other).build());
+
+        Post post = postRepository.save(Post.builder()
+                .author(other)
+                .content("solo para seguidores")
+                .visibility(PostVisibility.FOLLOWERS_ONLY)
+                .build());
+
+        mockMvc.perform(get("/api/posts/{postId}", post.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").value("solo para seguidores"));
+    }
 }

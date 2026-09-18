@@ -118,6 +118,40 @@ public class PostService {
         return enrichAndMap(principal, postsPage, followedAuthorIds);
     }
 
+    public PostResponse getPost(UserPrincipal principal, UUID postId) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found"));
+
+        if (post.getStatus() != PostStatus.VISIBLE) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
+        }
+
+        UUID authorId = post.getAuthor().getId();
+        boolean isOwner = principal.getId().equals(authorId);
+        boolean isFollower = isOwner
+                || followRepository.existsByFollowerIdAndFollowingId(principal.getId(), authorId);
+
+        boolean visible = switch (post.getVisibility()) {
+            case PUBLIC -> true;
+            case FOLLOWERS_ONLY -> isFollower;
+            case PRIVATE -> isOwner;
+        };
+
+        // 404, no 403: no revelamos que un post privado existe si quien
+        // pregunta no tiene permiso para verlo.
+        if (!visible) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
+        }
+
+        long supportCount = postSupportRepository.countByPostId(postId);
+        boolean supported = postSupportRepository.existsByPostIdAndUserId(postId, principal.getId());
+
+        return toResponse(post,
+                isFollower ? Set.of(authorId) : Set.of(),
+                Map.of(postId, supportCount),
+                supported ? Set.of(postId) : Set.of());
+    }
+
     // Version para getFeed: calcula "seguido" por autor real, ademas del apoyo.
     private Page<PostResponse> enrichAndMap(UserPrincipal principal, Page<Post> postsPage) {
         List<UUID> authorIdsInPage = postsPage.getContent().stream()
@@ -172,4 +206,5 @@ public class PostService {
                 supportedPostIds.contains(post.getId())
         );
     }
+
 }
