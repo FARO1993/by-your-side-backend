@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: ${PORT:8080}
 
 spring:
   application:
@@ -12,12 +12,34 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     show-sql: false
     properties:
       hibernate:
         format_sql: true
     open-in-view: false
+
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 5MB
+
+  flyway:
+    baseline-on-migrate: true
+    baseline-version: 1
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:change-this-secret-in-production-min-32-characters}
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  admin-bootstrap-username: ${ADMIN_BOOTSTRAP_USERNAME:}
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}
+
+cloudinary:
+  cloud-name: ${CLOUDINARY_CLOUD_NAME:}
+  api-key: ${CLOUDINARY_API_KEY:}
+  api-secret: ${CLOUDINARY_API_SECRET:}
 
 logging:
   level:
