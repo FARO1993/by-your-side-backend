@@ -18,6 +18,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.text.Normalizer;
+
 @Service
 @RequiredArgsConstructor
 public class AuthService {
@@ -28,15 +30,12 @@ public class AuthService {
     private final JwtService jwtService;
 
     public AuthResponse register(RegisterRequest request) {
-        if (userRepository.existsByUsername(request.username())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Username already taken");
-        }
         if (userRepository.existsByEmail(request.email())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already registered");
         }
 
         User user = User.builder()
-                .username(request.username())
+                .username(generateUniqueUsername(request.displayName()))
                 .email(request.email())
                 .passwordHash(passwordEncoder.encode(request.password()))
                 .displayName(request.displayName())
@@ -47,8 +46,7 @@ public class AuthService {
         try {
             user = userRepository.save(user);
         } catch (DataIntegrityViolationException ex) {
-            // Cubre la carrera entre el check de arriba y el insert (dos requests simultaneos).
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "Username or email already in use");
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already in use");
         }
 
         UserPrincipal principal = new UserPrincipal(user);
@@ -58,16 +56,46 @@ public class AuthService {
     }
 
     public AuthResponse login(LoginRequest request) {
-        authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(request.username(), request.password())
-        );
+        // Se resuelve el email a un username interno ANTES de autenticar --
+        // asi el resto de la cadena de Spring Security (CustomUserDetailsService,
+        // JwtAuthenticationFilter, WebSocket) sigue funcionando exactamente
+        // igual que siempre, basada en username, sin tocar nada mas.
+        User user = userRepository.findByEmail(request.email())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid username or password"));
 
-        User user = userRepository.findByUsername(request.username())
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials"));
+        authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(user.getUsername(), request.password())
+        );
 
         UserPrincipal principal = new UserPrincipal(user);
         String token = jwtService.generateToken(principal);
 
         return new AuthResponse(token, user.getUsername(), user.getRole().name());
+    }
+
+    // Genera un username interno a partir del nombre a mostrar -- el usuario
+    // nunca lo elige ni lo ve como campo de formulario, pero sigue existiendo
+    // adentro (login sigue siendo por username a nivel de Spring Security,
+    // WebSocket lo usa como identidad de sesion, @handle en el perfil, etc).
+    private String generateUniqueUsername(String displayName) {
+        String base = slugify(displayName);
+        if (base.isBlank()) {
+            base = "usuario";
+        }
+
+        String candidate = base;
+        int suffix = 1;
+        while (userRepository.existsByUsername(candidate)) {
+            candidate = base + suffix;
+            suffix++;
+        }
+        return candidate;
+    }
+
+    private String slugify(String value) {
+        String withoutAccents = Normalizer.normalize(value, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "");
+        String slug = withoutAccents.toLowerCase().replaceAll("[^a-z0-9]+", "");
+        return slug.length() > 24 ? slug.substring(0, 24) : slug;
     }
 }

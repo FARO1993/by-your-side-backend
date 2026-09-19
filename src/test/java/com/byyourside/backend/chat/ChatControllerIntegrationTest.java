@@ -90,7 +90,7 @@ class ChatControllerIntegrationTest {
     }
 
     private String login(String username) throws Exception {
-        String body = objectMapper.writeValueAsString(new LoginPayload(username, "secretpass123"));
+        String body = objectMapper.writeValueAsString(new LoginPayload(username + "@example.com", "secretpass123"));
         String response = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
@@ -99,7 +99,7 @@ class ChatControllerIntegrationTest {
         return objectMapper.readTree(response).get("token").asText();
     }
 
-    private record LoginPayload(String username, String password) {
+    private record LoginPayload(String email, String password) {
     }
 
     private String createConversation(String token, java.util.UUID otherUserId) throws Exception {
