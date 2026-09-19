@@ -40,10 +40,9 @@ class AuthControllerIntegrationTest {
     void shouldRegisterNewUserSuccessfully() throws Exception {
         String body = """
                 {
-                    "username": "facu",
+                    "displayName": "Facu",
                     "email": "facu@example.com",
-                    "password": "secretpass123",
-                    "displayName": "Facu"
+                    "password": "secretpass123"
                 }
                 """;
 
@@ -57,45 +56,50 @@ class AuthControllerIntegrationTest {
     }
 
     @Test
-    void shouldReturnConflict_whenUsernameAlreadyExists() throws Exception {
-        String firstUser = """
-                {
-                    "username": "facu",
-                    "email": "facu@example.com",
-                    "password": "secretpass123",
-                    "displayName": "Facu"
-                }
+    void shouldGenerateDistinctUsername_whenDisplayNameCollides() throws Exception {
+        String first = """
+                {"displayName": "Facu", "email": "facu1@example.com", "password": "secretpass123"}
                 """;
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(firstUser))
+                        .content(first))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.username").value("facu"));
+
+        String second = """
+                {"displayName": "Facu", "email": "facu2@example.com", "password": "secretpass123"}
+                """;
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(second))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.username").value("facu1"));
+    }
+
+    @Test
+    void shouldReturnConflict_whenEmailAlreadyExists() throws Exception {
+        String body = """
+                {"displayName": "Facu", "email": "facu@example.com", "password": "secretpass123"}
+                """;
+        mockMvc.perform(post("/api/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
                 .andExpect(status().isCreated());
 
-        String duplicateUsername = """
-                {
-                    "username": "facu",
-                    "email": "otro@example.com",
-                    "password": "otherpass123",
-                    "displayName": "Otro"
-                }
+        String duplicateEmail = """
+                {"displayName": "Otro", "email": "facu@example.com", "password": "otherpass123"}
                 """;
-
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(duplicateUsername))
+                        .content(duplicateEmail))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("Username already taken"));
+                .andExpect(jsonPath("$.message").value("Email already registered"));
     }
 
     @Test
     void shouldReturnBadRequest_whenPasswordIsTooShort() throws Exception {
         String body = """
-                {
-                    "username": "facu",
-                    "email": "facu@example.com",
-                    "password": "123",
-                    "displayName": "Facu"
-                }
+                {"displayName": "Facu", "email": "facu@example.com", "password": "123"}
                 """;
 
         mockMvc.perform(post("/api/auth/register")
@@ -108,12 +112,7 @@ class AuthControllerIntegrationTest {
     @Test
     void shouldLoginSuccessfully_whenCredentialsAreValid() throws Exception {
         String registerBody = """
-                {
-                    "username": "facu",
-                    "email": "facu@example.com",
-                    "password": "secretpass123",
-                    "displayName": "Facu"
-                }
+                {"displayName": "Facu", "email": "facu@example.com", "password": "secretpass123"}
                 """;
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -121,10 +120,7 @@ class AuthControllerIntegrationTest {
                 .andExpect(status().isCreated());
 
         String loginBody = """
-                {
-                    "username": "facu",
-                    "password": "secretpass123"
-                }
+                {"email": "facu@example.com", "password": "secretpass123"}
                 """;
 
         mockMvc.perform(post("/api/auth/login")
@@ -138,12 +134,7 @@ class AuthControllerIntegrationTest {
     @Test
     void shouldReturnUnauthorized_whenPasswordIsWrong() throws Exception {
         String registerBody = """
-                {
-                    "username": "facu",
-                    "email": "facu@example.com",
-                    "password": "secretpass123",
-                    "displayName": "Facu"
-                }
+                {"displayName": "Facu", "email": "facu@example.com", "password": "secretpass123"}
                 """;
         mockMvc.perform(post("/api/auth/register")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -151,15 +142,24 @@ class AuthControllerIntegrationTest {
                 .andExpect(status().isCreated());
 
         String wrongLoginBody = """
-                {
-                    "username": "facu",
-                    "password": "wrongpassword"
-                }
+                {"email": "facu@example.com", "password": "wrongpassword"}
                 """;
 
         mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(wrongLoginBody))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void shouldReturnUnauthorized_whenEmailDoesNotExist() throws Exception {
+        String body = """
+                {"email": "noexiste@example.com", "password": "cualquierpass"}
+                """;
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
                 .andExpect(status().isUnauthorized());
     }
 }

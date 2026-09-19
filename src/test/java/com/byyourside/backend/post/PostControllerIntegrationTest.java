@@ -91,7 +91,7 @@ class PostControllerIntegrationTest {
     }
 
     private String login(String username, String password) throws Exception {
-        String body = objectMapper.writeValueAsString(new LoginPayload(username, password));
+        String body = objectMapper.writeValueAsString(new LoginPayload(username + "@example.com", password));
 
         String response = mockMvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -104,7 +104,7 @@ class PostControllerIntegrationTest {
         return objectMapper.readTree(response).get("token").asText();
     }
 
-    private record LoginPayload(String username, String password) {
+    private record LoginPayload(String email, String password) {
     }
 
     private UUID createPost(String token, String content) throws Exception {
