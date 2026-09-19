@@ -1,5 +1,6 @@
 package com.byyourside.backend.chat;
 
+import com.byyourside.backend.availability.AvailabilityRepository;
 import com.byyourside.backend.chat.dto.ConversationResponse;
 import com.byyourside.backend.chat.dto.MessageResponse;
 import com.byyourside.backend.follow.FollowRepository;
@@ -32,6 +33,7 @@ public class ChatService {
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
     private final SimpMessagingTemplate messagingTemplate;
+    private final AvailabilityRepository availabilityRepository;
 
     @Transactional
     public ConversationResponse getOrCreateConversation(UserPrincipal principal, UUID otherUserId) {
@@ -47,13 +49,19 @@ public class ChatService {
         boolean connected = followRepository.existsByFollowerIdAndFollowingId(currentUser.getId(), otherUser.getId())
                 || followRepository.existsByFollowerIdAndFollowingId(otherUser.getId(), currentUser.getId());
 
-        if (!connected) {
+        // El modo compañia permite el primer contacto sin follow previo,
+        // pero solo si la otra persona dio consentimiento explicito y
+        // publico declarandose disponible para acompañar en este momento.
+        // Nunca al reves: nadie puede mensajear a alguien "disponible"
+        // sin que esa disponibilidad este activa ahora mismo.
+        boolean targetIsAvailableForCompanionship =
+                availabilityRepository.existsByUserIdAndExpiresAtAfter(otherUser.getId(), Instant.now());
+
+        if (!connected && !targetIsAvailableForCompanionship) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "You can only message users you follow or who follow you");
+                    "You can only message users you follow, who follow you, or who are currently available for companionship");
         }
 
-        // Orden canonico por UUID para que el par (A, B) sea siempre el mismo
-        // sin importar quien inicio la conversacion.
         User userA = currentUser.getId().toString().compareTo(otherUser.getId().toString()) <= 0 ? currentUser : otherUser;
         User userB = userA.equals(currentUser) ? otherUser : currentUser;
 
