@@ -35,11 +35,17 @@ app:
   admin-bootstrap-username: ${ADMIN_BOOTSTRAP_USERNAME:}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}
+  frontend-url: ${APP_FRONTEND_URL:http://localhost:5173}
+  mail:
+    from: ${MAIL_FROM:}
 
 cloudinary:
   cloud-name: ${CLOUDINARY_CLOUD_NAME:}
   api-key: ${CLOUDINARY_API_KEY:}
   api-secret: ${CLOUDINARY_API_SECRET:}
+
+resend:
+  api-key: ${RESEND_API_KEY:}
 
 logging:
   level:

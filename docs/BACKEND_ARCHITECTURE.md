@@ -27,6 +27,7 @@ com.byyourside.backend
 ├── chat            Conversation, Message — REST + push WebSocket
 ├── comment         Comment, CommentStatus — anidado bajo /api/posts/{postId}/comments
 ├── config          SecurityConfig, AdminBootstrap
+├── email           Email transaccional: EmailService (interfaz) + ResendEmailService
 ├── exception       GlobalExceptionHandler, ErrorResponse
 ├── follow          Follow (relación N:N usuario→usuario)
 ├── notification     Notification, NotificationType — generadas internamente, nunca por API directa
@@ -184,6 +185,32 @@ antecedente.
 - Límite de tamaño de archivo: 5MB, a nivel de `spring.servlet.multipart` (aplica a
   cualquier multipart request del servlet container, aunque hoy solo hay un endpoint que
   lo usa).
+
+## Email (Resend)
+
+- Interfaz `EmailService` (paquete `email`) con una única implementación real,
+  `ResendEmailService`, sobre el SDK `com.resend:resend-java`. Mismo patrón que
+  `ImageStorageService`/Cloudinary: nada fuera del paquete `email` conoce Resend
+  directamente — `EmailVerificationService` solo depende de la interfaz.
+- Dos casos de uso actuales: `sendVerificationEmail` (tras registro y tras
+  `resend-verification`) y `sendWelcomeEmail` (tras la primera verificación exitosa).
+- **Sin credenciales configuradas** (`RESEND_API_KEY` vacío, default en dev/test): el
+  envío es un no-op silencioso (se loguea a nivel `debug`), no un error — igual que
+  Cloudinary con sus credenciales, pero sin lanzar excepción, para no requerir mockear
+  este service en el resto de la suite de tests.
+- **Con credenciales configuradas y falla el proveedor** (Resend devuelve error o no
+  responde): `ResendEmailService` lanza `EmailDeliveryException` (unchecked). El
+  contenido del email, el `RESEND_API_KEY` y el verification token nunca se loguean —
+  solo el motivo del fallo.
+- **Resiliencia**: `EmailVerificationService` captura `EmailDeliveryException` alrededor
+  de cada envío y solo loguea un warning (`log.warn`) — nunca revierte la operación de
+  negocio que originó el envío. Una caída de Resend no tumba un registro válido
+  (`issue`) ni una verificación válida (`verify`). El usuario/token/verificación ya
+  quedaron persistidos antes del intento de envío.
+- Variables de entorno: `RESEND_API_KEY` (vacío por default), `MAIL_FROM` (dirección
+  `from`, vacío por default — debe setearse en cualquier ambiente que efectivamente
+  envíe correo), `APP_FRONTEND_URL` (base del link de verificación, default
+  `http://localhost:5173`).
 
 ## WebSocket
 

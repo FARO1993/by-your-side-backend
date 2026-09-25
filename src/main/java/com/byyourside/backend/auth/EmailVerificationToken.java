@@ -43,6 +43,14 @@ public class EmailVerificationToken {
     @Column(name = "used_at")
     private Instant usedAt;
 
+    // Distinto de usedAt a proposito: usedAt significa "este token efectivamente
+    // verifico la cuenta"; invalidatedAt significa "fue superado por un reenvio
+    // (resend-verification) sin llegar a usarse". Se conservan ambos por
+    // separado para no perder precision de auditoria sobre que paso con cada
+    // token -- ninguno de los dos se borra.
+    @Column(name = "invalidated_at")
+    private Instant invalidatedAt;
+
     @PrePersist
     protected void onCreate() {
         this.createdAt = Instant.now();
@@ -54,5 +62,9 @@ public class EmailVerificationToken {
 
     public boolean isUsed() {
         return usedAt != null;
+    }
+
+    public boolean isInvalidated() {
+        return invalidatedAt != null;
     }
 }
