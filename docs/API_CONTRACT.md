@@ -100,19 +100,26 @@ colisión) — el usuario nunca lo elige ni lo ve como campo de formulario en el
   - `email`: obligatorio, formato email válido.
   - `password`: obligatorio, mínimo 8 caracteres.
   - `displayName`: opcional (puede ser `null`; si es blank el username generado cae en `"usuario"` + sufijo).
-- **Response 201** (`AuthResponse`):
+- **Response 201** (`AuthResponse`) — **contrato roto en Fase 1.5**, ver aviso abajo:
   ```json
   {
-    "token": "eyJhbGciOi...",
+    "accessToken": "eyJhbGciOi...",
+    "refreshToken": "8xQK3f2n...",
+    "tokenType": "Bearer",
+    "expiresIn": 900,
     "username": "juanperez",
     "role": "USER"
   }
   ```
   **Importante**: el campo se llama `username` pero es el handle autogenerado, **no**
-  el email. El frontend debe guardar `token` y puede mostrar `username` como handle,
-  pero para mostrar el email debe llamar luego a `GET /api/users/me`. **Sin cambios en
-  esta forma** — la infraestructura de verificación de email no agrega ni quita campos
-  de `AuthResponse`.
+  el email. El frontend debe guardar `accessToken` (para el header
+  `Authorization: Bearer ...` de cada request autenticado) y `refreshToken` (para
+  `POST /api/auth/refresh` cuando el access token expire), y puede mostrar `username`
+  como handle, pero para mostrar el email debe llamar luego a `GET /api/users/me`.
+  - **⚠️ BREAKING CHANGE (Fase 1.5)**: `AuthResponse` ya **no** tiene el campo `token`
+    — se reemplazó por `accessToken` + `refreshToken` + `tokenType` + `expiresIn`. No
+    conviven ambos nombres. Ver `FRONTEND_HANDOFF.md` para el detalle de qué tiene que
+    adaptar el frontend.
 - **Errores**:
   - `409 Conflict` — email ya registrado (`"Email already registered"` o, en condición
     de carrera, `"Email already in use"`).
@@ -126,6 +133,9 @@ colisión) — el usuario nunca lo elige ni lo ve como campo de formulario en el
   registro **igual se completa** — no se pierde la cuenta por eso (ver
   "Resiliencia ante fallos de Resend" en `POST /api/auth/verify-email` más abajo). El
   token nunca se expone en ningún response HTTP ni se loguea en texto plano.
+- **Sesión (Fase 1.5)**: un registro exitoso crea una sesión nueva (ver
+  `POST /api/auth/refresh` más abajo) — el `refreshToken` devuelto corresponde a esa
+  sesión.
 
 ### `POST /api/auth/login`
 
@@ -134,18 +144,31 @@ colisión) — el usuario nunca lo elige ni lo ve como campo de formulario en el
   ```json
   { "email": "persona@example.com", "password": "..." }
   ```
-- **Response 200** (`AuthResponse`): igual forma que register (`token`, `username`, `role`).
+- **Response 200** (`AuthResponse`): misma forma que register (`accessToken`,
+  `refreshToken`, `tokenType`, `expiresIn`, `username`, `role`).
 - **Errores**: `401 Unauthorized` — `"Invalid username or password"` si el email no
   existe o la contraseña no matchea. También puede fallar si la cuenta está
   `SUSPENDED`/`DEACTIVATED` (Spring Security la trata como cuenta bloqueada/deshabilitada
   → 401 genérico también, el backend no distingue ese caso en el mensaje).
 - **No requiere email verificado**: un usuario con `emailVerified: false` puede loguearse
   con total normalidad — esta fase no introduce ninguna restricción de acceso por eso.
+- **Multi-dispositivo (Fase 1.5)**: cada login exitoso crea una sesión **independiente**
+  (login desde el celular y desde la PC = dos sesiones separadas). Loguearse de nuevo
+  **no** cierra las sesiones ya abiertas en otros dispositivos/pestañas.
 
-**JWT emitido**: contiene `sub` (username interno), claim `userId` (UUID string), claim
-`role`, `iat`, `exp`. Expira a las 24hs por default (`JWT_EXPIRATION_MS`, configurable).
-No hay endpoint de refresh ni de logout — el logout es puramente client-side (descartar
-el token).
+**JWT (access token) emitido**: contiene `sub` (username interno), claim `userId` (UUID
+string), claim `role`, `iat`, `exp`. Expira a los **15 minutos** por default
+(`JWT_ACCESS_EXPIRATION_MS`, configurable) — antes de Fase 1.5 expiraba a las 24hs; ese
+valor largo ahora lo cubre el refresh token. Stateless: su validez se verifica
+únicamente por firma criptográfica, **no** se consulta la base en cada request
+autenticado.
+
+**Refresh token**: opaco (no es JWT), aleatorio (32 bytes `SecureRandom`, Base64
+URL-safe), expira a los **30 días** por default (`REFRESH_TOKEN_EXPIRATION_MS`). Se
+persiste únicamente su hash SHA-256 (`auth_sessions.token_hash`) — el valor real nunca
+se guarda en la base, nunca se loguea, nunca aparece en otro response que no sea el que
+lo emite. Ver `POST /api/auth/refresh` para el ciclo de vida completo (rotación,
+detección de reuse) y `BACKEND_ARCHITECTURE.md` § Sesiones para el diseño interno.
 
 ### `POST /api/auth/verify-email`
 
@@ -298,12 +321,15 @@ Aplica el cambio de contraseña a partir del token recibido por email en
   informativo ("tu contraseña fue cambiada"), sin contraseña ni token en el contenido.
   Si ese envío falla, **no revierte** el cambio de contraseña ya aplicado (mismo
   patrón "best effort" que el resto de los emails de esta fase).
-- **Limitación conocida — JWT preexistentes**: un JWT emitido **antes** del reset sigue
-  siendo válido hasta su expiración natural (`JWT_EXPIRATION_MS`). Fase 1.3 no
-  implementa revocación/versionado de tokens ni sesiones — eso queda para
-  **Fase 1.5 — Session Security**. En la práctica, un atacante con un JWT robado
-  emitido antes del reset conserva acceso hasta que ese JWT expire por sí solo, aunque
-  la contraseña ya haya sido cambiada.
+- **Revoca todas las sesiones (Fase 1.5)**: un reset exitoso invalida **todos** los
+  refresh tokens del usuario (todos los dispositivos/sesiones, no solo uno). El access
+  JWT que estuviera en uso en cualquier dispositivo sigue siendo válido hasta su
+  expiración natural (máximo 15 minutos, ver `BACKEND_ARCHITECTURE.md` § Sesiones), pero
+  ningún dispositivo puede volver a renovarlo vía `/api/auth/refresh` — todos van a
+  necesitar loguearse de nuevo con la contraseña nueva. Esto es intencional: si alguien
+  pudo resetear la contraseña es porque tenía acceso al email, y cualquier sesión ya
+  abierta con la contraseña vieja (por ejemplo, la de un atacante con la contraseña
+  comprometida) no debe sobrevivir al reset.
 
 ### `POST /api/auth/change-password` (Fase 1.4) — requiere autenticación
 
@@ -343,8 +369,7 @@ contraseña actual, no para alguien que la perdió. Es el **único** endpoint ba
   ```json
   { "message": "Password changed successfully." }
   ```
-  No devuelve un JWT nuevo — el JWT ya en uso del cliente sigue siendo válido tal cual
-  (ver limitación de JWT preexistentes más abajo), no hace falta volver a loguearse.
+  No devuelve un JWT/tokens nuevos.
 - **Reglas**:
   - `currentPassword` debe matchear (`PasswordEncoder.matches`) el hash actualmente
     guardado.
@@ -361,11 +386,90 @@ contraseña actual, no para alguien que la perdió. Es el **único** endpoint ba
 - **Email de confirmación**: reutiliza `EmailService.sendPasswordChangedEmail` (el
   mismo método que ya usa `reset-password` desde Fase 1.3 — no se creó una segunda
   abstracción). Mismo comportamiento "best effort": si Resend falla, **no revierte** el
-  cambio de contraseña ya aplicado, el fallo solo queda logueado server-side.
-- **Limitación conocida — JWT preexistentes**: igual que en `reset-password`, cualquier
-  JWT emitido antes del cambio (incluido el que se usó para autenticar esta misma
-  request) sigue siendo válido hasta su expiración natural. Fase 1.4 no implementa
-  revocación/versionado de tokens — eso queda para **Fase 1.5 — Session Security**.
+  cambio de contraseña ya aplicado ni reactiva las sesiones recién cerradas (ver abajo),
+  el fallo solo queda logueado server-side.
+- **Revoca todas las sesiones (Fase 1.5)**: igual que `reset-password`, un cambio de
+  contraseña exitoso invalida **todos** los refresh tokens del usuario en todos los
+  dispositivos — **incluida la sesión que hizo este mismo request**. El access JWT en
+  uso en cualquier dispositivo (incluido el que se usó para autenticar este request)
+  sigue siendo válido hasta su expiración natural (máximo 15 minutos, no hay blacklist
+  de access tokens en esta fase), pero ningún dispositivo puede renovarlo vía
+  `/api/auth/refresh` después de esto: todos necesitan loguearse de nuevo. Ver
+  `BACKEND_ARCHITECTURE.md` § Sesiones.
+
+### `POST /api/auth/refresh` (Fase 1.5)
+
+Intercambia un refresh token vigente por un access token nuevo **y un refresh token
+nuevo** (rotación obligatoria — el refresh token presentado queda inutilizable después
+de esta llamada, sin importar el resultado). Endpoint **público** — se usa
+precisamente cuando el access token ya expiró, así que no puede exigir uno válido. La
+sesión se identifica exclusivamente por el refresh token del body, nunca por un JWT ni
+por ningún identificador enviado por el cliente.
+
+- **Auth**: no requerida.
+- **Body** (`RefreshRequest`):
+  ```json
+  { "refreshToken": "..." }
+  ```
+  - `refreshToken`: obligatorio (`@NotBlank`).
+- **Response 200** (`RefreshResponse`):
+  ```json
+  { "accessToken": "...", "refreshToken": "...", "tokenType": "Bearer", "expiresIn": 900 }
+  ```
+  El `refreshToken` devuelto es **siempre distinto** del presentado — el frontend debe
+  reemplazar el que tenía guardado por este, nunca reutilizar el viejo.
+- **Rotación**: cada refresh exitoso invalida el token presentado y emite uno nuevo
+  dentro de la misma sesión (misma "familia", ver `BACKEND_ARCHITECTURE.md` § Sesiones).
+  El refresh token nuevo hereda una expiración de **30 días completos** desde este
+  momento (ventana deslizante, no un límite absoluto desde el login original) — una
+  sesión que se sigue usando activamente no expira nunca por tiempo, solo por logout,
+  cambio/reset de contraseña, o reuse detectado.
+- **Detección de reuse**: si el refresh token presentado **ya fue rotado antes** (un
+  token viejo que alguien volvió a presentar — firma clásica de un token
+  copiado/robado), el backend **revoca automáticamente toda la sesión** (todas las
+  generaciones de esa familia, pasadas y futuras) y responde `409`. Cualquier refresh
+  token descendiente de esa sesión, aunque nunca se haya usado mal, queda inutilizable a
+  partir de ese momento. El access token ya emitido antes de esto puede seguir
+  funcionando hasta que expire por sí solo (máximo 15 minutos) — esa ventana residual es
+  una limitación conocida y aceptada de esta fase (no hay blacklist de access tokens).
+- **Errores**:
+  - `400 Bad Request` — token inexistente/malformado (`"Invalid refresh token"`),
+    expirado (`"Refresh token has expired"`), revocado por logout/cambio de
+    contraseña/reset/reuse previo (`"Refresh token has been revoked"`), o body inválido
+    (`fieldErrors.refreshToken`).
+  - `409 Conflict` — token ya usado/rotado antes (`"Refresh token has already been
+    used"`) — este es tanto el caso de una carrera benigna entre dos requests
+    concurrentes sobre el mismo token (ver `BACKEND_ARCHITECTURE.md` § Concurrencia)
+    como el de reuse real detectado (ver arriba); la respuesta HTTP es la misma en
+    ambos casos a propósito.
+
+### `POST /api/auth/logout` (Fase 1.5)
+
+Cierra **la sesión correspondiente al refresh token presentado** (esa sesión
+únicamente — otros dispositivos/sesiones de la misma cuenta no se ven afectados).
+Endpoint **público**, mismo criterio que `/refresh`: no requiere (ni chequea) un access
+JWT vigente, para poder cerrar sesión incluso si el access token ya expiró, mientras se
+conserve el refresh token.
+
+- **Auth**: no requerida.
+- **Body** (`LogoutRequest`):
+  ```json
+  { "refreshToken": "..." }
+  ```
+  - `refreshToken`: obligatorio (`@NotBlank`).
+- **Response 200** (`LogoutResponse`), **siempre**, sin importar el caso real:
+  ```json
+  { "message": "Logged out successfully." }
+  ```
+- **Idempotente y sin distinguir casos** (mismo criterio anti-enumeration que
+  `forgot-password`/`resend-verification`): token inexistente, ya expirado, ya
+  rotado o ya revocado antes terminan en la misma respuesta genérica `200`. No hay
+  ningún código de error específico de este endpoint.
+- **Después de un logout**: el refresh token presentado (y cualquier otro de la misma
+  sesión) deja de funcionar en `/refresh` (`400`, `"Refresh token has been revoked"`).
+  El access JWT que estuviera en uso puede seguir funcionando hasta que expire por sí
+  solo (máximo 15 minutos) — el logout, igual que el resto de Fase 1.5, no revoca
+  access tokens ya emitidos, solo impide que la sesión emita nuevos.
 
 ---
 

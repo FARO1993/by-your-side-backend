@@ -25,7 +25,9 @@ com.byyourside.backend
 │                   EmailVerificationService/Token(Repository) — verificación de email.
 │                   PasswordResetService/Token(Repository) — recuperación de contraseña.
 │                   ChangePasswordService — cambio de contraseña autenticado (único
-│                   endpoint de /api/auth que requiere JWT)
+│                   endpoint de /api/auth que requiere JWT).
+│                   AuthSessionService/Session(Repository) + AuthSessionRevocationGuard
+│                   — refresh tokens con rotación y deteccion de reuse (Fase 1.5)
 ├── availability    Modo compañía: Availability, CompanionIntent
 ├── chat            Conversation, Message — REST + push WebSocket
 ├── comment         Comment, CommentStatus — anidado bajo /api/posts/{postId}/comments
@@ -70,7 +72,8 @@ User (users)
  ├─ 1:N → Conversation como userA / userB (conversations.user_a_id / user_b_id)
  ├─ 1:N → Message como sender (messages.sender_id)
  ├─ 1:N → EmailVerificationToken (email_verification_tokens.user_id)
- └─ 1:N → PasswordResetToken (password_reset_tokens.user_id)
+ ├─ 1:N → PasswordResetToken (password_reset_tokens.user_id)
+ └─ 1:N → AuthSession (auth_sessions.user_id)
 
 Post (posts)
  ├─ N:1 → User (author)
@@ -99,6 +102,14 @@ PasswordResetToken (password_reset_tokens) — N:1 → User. Misma forma que
                         credenciales de un solo uso con ciclos de vida distintos.
                         Expira a los 30 minutos (vs. 24hs de verificación de email).
                         UNIQUE(token_hash).
+AuthSession (auth_sessions) — N:1 → User. Una fila = una GENERACION de refresh token
+                        (no "una sesion" en si misma); familyId agrupa todas las
+                        generaciones de una misma sesion/dispositivo a medida que se
+                        rota. tokenHash SHA-256 (nunca el valor real), expiresAt,
+                        lastUsedAt, rotatedAt (nullable = generacion vigente),
+                        revokedAt (nullable = no revocada). Expira a los 30 dias desde
+                        la ULTIMA rotacion (ventana deslizante). UNIQUE(token_hash),
+                        INDEX(user_id), INDEX(family_id). Ver § Sesiones.
 ```
 
 Todas las relaciones `@ManyToOne` son `FetchType.LAZY` con `JOIN FETCH` explícito en las
@@ -108,10 +119,14 @@ queries que arman listados (para evitar N+1).
 
 - **Spring Security 6** stateless (`SessionCreationPolicy.STATELESS`), sin sesiones de
   servidor, sin CSRF (deshabilitado — no aplica sin cookies de sesión).
-- **JWT** (`io.jsonwebtoken` / jjwt 0.12.6, HMAC-SHA vía `Keys.hmacShaKeyFor`). Un solo
-  secreto simétrico (`app.jwt.secret`, mín. 32 chars recomendado, no forzado por código).
-  Claims: `sub` (username interno), `userId`, `role`, `iat`, `exp`. Expiración configurable
-  (`app.jwt.expiration-ms`, default 24h).
+- **JWT = access token únicamente** (`io.jsonwebtoken` / jjwt 0.12.6, HMAC-SHA vía
+  `Keys.hmacShaKeyFor`). Un solo secreto simétrico (`app.jwt.secret`, mín. 32 chars
+  recomendado, no forzado por código). Claims: `sub` (username interno), `userId`,
+  `role`, `iat`, `exp`. Expiración configurable (`app.jwt.access-expiration-ms`, default
+  **15 minutos** desde Fase 1.5 — antes era `app.jwt.expiration-ms` con default 24h;
+  esa vida larga ahora la cubre el refresh token, ver § Sesiones). Sigue siendo
+  puramente stateless: `JwtService.isTokenValid` valida solo firma + expiración, **nunca
+  consulta la base** — ningún endpoint protegido por JWT hace una query extra por esto.
 - **Login es por email** (`LoginRequest.email`), pero **todo el resto del pipeline de
   Spring Security sigue siendo por username interno**: `AuthService.login` resuelve
   `email → User → username` y autentica con `UsernamePasswordAuthenticationToken(username, password)`
@@ -148,6 +163,90 @@ queries que arman listados (para evitar N+1).
   agrega un endpoint nuevo bajo `/api/auth` que también deba requerir autenticación, hay
   que repetir este patrón (regla específica antes del `permitAll` amplio), no asumir que
   alcanza con chequear la autenticación a mano dentro del controller/service.
+  `/api/auth/refresh` y `/api/auth/logout` (Fase 1.5) caen bajo el `permitAll` amplio a
+  propósito -- ninguno de los dos requiere ni chequea un JWT, se identifican
+  exclusivamente por el refresh token del body (ver § Sesiones).
+
+## Sesiones (refresh tokens, Fase 1.5)
+
+Modelo de dos tokens: el **access token** (JWT, stateless, 15 min) autentica requests
+normales; el **refresh token** (opaco, persistido, 30 días) es lo único que permite
+obtener access tokens nuevos sin volver a loguearse. `AuthSessionService` (paquete
+`auth`) concentra toda la lógica.
+
+- **Familia = sesión**: cada login/register genera un `familyId` (UUID) nuevo. Una
+  familia agrupa TODAS las generaciones de refresh token de un mismo dispositivo/login a
+  medida que se rota -- rotar **nunca** sobreescribe el hash de la fila existente, crea
+  una fila nueva con el mismo `familyId`. Esto es lo que permite reconocer una
+  generación vieja si reaparece más tarde (reuse), sin importar cuántos saltos de
+  rotación haya habido desde entonces. Un login nuevo siempre arranca una familia propia
+  -- nunca reutiliza ni cierra la de otro dispositivo ya conectado (`AuthService`
+  inyecta `AuthSessionService.createSession(user)` tanto en `register` como en `login`).
+- **Rotación obligatoria** (`AuthSessionService.refresh`): cada `POST /api/auth/refresh`
+  exitoso marca la fila presentada como `rotatedAt = now` y crea una fila hija en la
+  misma familia con un refresh token nuevo. El token presentado queda inutilizable de
+  inmediato -- no hay ventana de gracia para reusarlo "por las dudas".
+- **Reuse detection**: si una fila con `rotatedAt` ya seteado vuelve a presentarse
+  (`session.isRotated()` true al momento del lookup), es la firma clásica de un token
+  copiado/robado -- alguien tiene una copia de una generación que el dueño legítimo ya
+  dejó atrás. Se revoca toda la familia (`revokeFamily`, bulk update por `familyId`) y
+  se responde `409`. **Cualquier descendiente de esa familia**, incluida la generación
+  más reciente que nunca se usó indebidamente, queda inutilizable a partir de ahí.
+- **`AuthSessionRevocationGuard` — bean separado a propósito**: la revocación por reuse
+  tiene que sobrevivir aunque `refresh()` termine lanzando la `ResponseStatusException`
+  que informa el `409` al cliente (por default, una excepción no atrapada revierte TODA
+  la transacción del método, lo que borraría la revocación junto con el resto). La
+  solución es `@Transactional(propagation = REQUIRES_NEW)` -- pero esa anotación **solo
+  funciona si la llamada pasa por el proxy de Spring**. Un primer intento la puso como
+  método propio de `AuthSessionService` y la llamó como `this.revokeFamilyIndependently(...)`
+  desde `refresh()`: ese patrón es **self-invocation**, la llamada nunca pasa por el
+  proxy, `REQUIRES_NEW` se ignora en silencio, y la revocación se revertía igual (bug
+  real, detectado por los tests de esta misma fase: `shouldRevokeWholeFamily_whenReuseDetected`
+  fallaba porque NINGUNA fila terminaba revocada). La solución fue mover ese único
+  método a un bean `@Component` separado (`AuthSessionRevocationGuard`), inyectado en
+  `AuthSessionService` -- al ser una llamada a OTRO bean, sí atraviesa el proxy y la
+  nueva transacción se confirma de verdad, independiente de que la de `refresh()` se
+  revierta después. **Lección para el resto del código**: cualquier necesidad futura de
+  `REQUIRES_NEW` (u otra propagación no-default) tiene que vivir en un bean distinto del
+  que la invoca, nunca como llamada `this.metodo()` dentro de la misma clase.
+- **Concurrencia — claim atómico, sin locking explícito**: dos requests de refresh
+  simultáneas sobre el mismo token no deben poder producir dos hijos válidos.
+  `AuthSessionRepository.claimForRotation` es un `UPDATE ... WHERE rotated_at IS NULL
+  AND revoked_at IS NULL` que devuelve la cantidad de filas afectadas -- PostgreSQL
+  serializa la evaluación del `WHERE` y la escritura de cada fila individual, así que
+  como mucho UNA de dos llamadas concurrentes puede tener éxito (afectar 1 fila), sin
+  necesitar `@Version` (optimistic locking) ni `SELECT ... FOR UPDATE` (pessimistic
+  locking). El caller (`refresh()`) siempre hace primero un `findByTokenHash` de lectura
+  para decidir el resto de las validaciones (expirado/revocado/rotado) y recién después
+  intenta el claim atómico; si el claim devuelve `0`, alguien más ganó la carrera entre
+  esa lectura y este `UPDATE` -- se trata igual que un token ya usado (`409`), pero **sin
+  revocar la familia** (a diferencia del reuse real de arriba): perder una carrera
+  contra una request concurrente legítima no es evidencia de un token robado, es ruido
+  de timing benigno (doble click, reintento de red), y no amerita matar la sesión
+  entera. Test de esta protección:
+  `AuthSessionIntegrationTest.shouldOnlyAllowOneWinner_whenTwoConcurrentRotationsClaimSameToken`,
+  dos hilos reales contra la misma fila via `TransactionTemplate` explícito por hilo.
+- **`revokeAllForUser`**: usado por `ChangePasswordService` y `PasswordResetService` --
+  decisión de producto, cambiar o resetear la contraseña cierra TODAS las sesiones del
+  usuario (todas las familias), no solo la actual. Se llama dentro de la MISMA
+  transacción que persiste la contraseña nueva (propagación REQUIRED normal, a
+  diferencia del caso de reuse) -- si algo fallara, ambas cosas se revierten juntas. El
+  envío del email de confirmación sigue siendo un intento aparte de siempre, nunca
+  revierte ni la contraseña ni la revocación.
+- **Logout**: revoca la familia completa del refresh token presentado, idempotente y sin
+  distinguir casos en la respuesta (mismo criterio anti-enumeration que
+  `forgot-password`).
+- **Ventana residual de access tokens**: ninguna operación de esta fase (logout, cambio
+  de contraseña, reset, reuse detectado) revoca access tokens ya emitidos -- son
+  stateless, no hay blacklist. Un access token sigue funcionando hasta su expiración
+  natural (máximo 15 minutos) sin importar qué le haya pasado a la sesión que lo emitió.
+  Esto es una limitación conocida y aceptada de Fase 1.5, no un descuido -- una
+  blacklist de access tokens convertiría el modelo en stateful (requeriría consultar la
+  base en cada request autenticado) y queda fuera de alcance.
+- **Sin cleanup automático**: las filas de `auth_sessions` (rotadas, revocadas o
+  expiradas) no se borran nunca -- son la única fuente de auditoría de qué pasó con cada
+  sesión. No hay scheduler/cron de limpieza en esta fase; puede agregarse más adelante
+  si el volumen de filas lo justifica.
 
 ## Persistencia
 
@@ -173,6 +272,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V4__add_email_verification.sql` | `users.email_verified` / `users.email_verified_at`, tabla `email_verification_tokens` |
 | `V5__add_email_verification_token_invalidation.sql` | `email_verification_tokens.invalidated_at` |
 | `V6__add_password_reset_tokens.sql` | tabla `password_reset_tokens` |
+| `V7__add_auth_sessions.sql` | tabla `auth_sessions` |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`
@@ -275,7 +375,9 @@ un problema actual, pero es una limitación a tener en cuenta antes de escalar.
   variables (no versionado, ver `.env` local del repo — nunca commitear secretos reales).
 - Variables de entorno relevantes (todas con default de desarrollo en `application.yml`):
   `PORT`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET`,
-  `JWT_EXPIRATION_MS`, `ADMIN_BOOTSTRAP_USERNAME`, `CORS_ALLOWED_ORIGINS`,
+  `JWT_ACCESS_EXPIRATION_MS` (Fase 1.5, reemplaza a `JWT_EXPIRATION_MS`),
+  `REFRESH_TOKEN_EXPIRATION_MS` (Fase 1.5, nueva), `ADMIN_BOOTSTRAP_USERNAME`,
+  `CORS_ALLOWED_ORIGINS`, `APP_FRONTEND_URL`, `MAIL_FROM`, `RESEND_API_KEY`,
   `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`.
 - El comentario de heartbeat de WebSocket en el código menciona **Railway** como destino
   de despliegue de referencia (proxy intermedio que corta conexiones inactivas sin

@@ -1,6 +1,7 @@
 package com.byyourside.backend.comment;
 
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.post.Post;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.post.PostVisibility;
@@ -43,6 +44,9 @@ class CommentControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private PostRepository postRepository;
 
     @Autowired
@@ -67,6 +71,7 @@ class CommentControllerIntegrationTest {
         commentRepository.deleteAll();
         postRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com", UserRole.USER);
@@ -105,7 +110,7 @@ class CommentControllerIntegrationTest {
                 .getResponse()
                 .getContentAsString();
 
-        return objectMapper.readTree(response).get("token").asText();
+        return objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private record LoginPayload(String email, String password) {

@@ -49,6 +49,7 @@ public class PasswordResetService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailService emailService;
+    private final AuthSessionService authSessionService;
 
     @Value("${app.frontend-url}")
     private String frontendUrl;
@@ -94,6 +95,14 @@ public class PasswordResetService {
         User user = token.getUser();
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         userRepository.save(user);
+
+        // Decision de producto (Fase 1.5): un reset de contrasena cierra
+        // TODAS las sesiones del usuario -- si alguien pudo resetear la
+        // contrasena es porque tenia acceso al email, pero cualquier sesion
+        // ya abierta con la contrasena vieja (por ejemplo, la de un atacante
+        // que la tenia comprometida) no debe sobrevivir a un reset. Misma
+        // transaccion que el cambio de contrasena.
+        authSessionService.revokeAllForUser(user.getId());
 
         try {
             emailService.sendPasswordChangedEmail(user.getEmail(), user.getDisplayName());

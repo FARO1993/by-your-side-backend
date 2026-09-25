@@ -52,6 +52,9 @@ class PasswordResetIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private PasswordResetTokenRepository tokenRepository;
 
     @Autowired
@@ -71,6 +74,7 @@ class PasswordResetIntegrationTest {
     @BeforeEach
     void cleanUp() {
         tokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
         userRepository.deleteAll();
     }
 
@@ -459,7 +463,7 @@ class PasswordResetIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(loginBody("facu@example.com", "brandnewpass456")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.token").isNotEmpty());
+                .andExpect(jsonPath("$.accessToken").isNotEmpty());
     }
 
     // --- Email de confirmacion ---

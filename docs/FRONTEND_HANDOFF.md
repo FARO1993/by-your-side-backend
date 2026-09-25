@@ -27,25 +27,70 @@ del backend (junto con `API_CONTRACT.md` / `WEBSOCKET_CONTRACT.md`).
   default (`CORS_ALLOWED_ORIGINS`) — si Vite corre en otro puerto, pedir que se agregue
   al backend.
 
-## Autenticación y manejo del JWT
+## Autenticación y manejo de sesión
 
-1. `POST /api/auth/register` o `POST /api/auth/login` devuelven `{ token, username, role }`.
-2. Guardar `token` (ej. `localStorage` o memoria + refresh en boot) y enviarlo en
-   **todas** las requests autenticadas como:
+> ## ⚠️ BREAKING CHANGE — Fase 1.5
+> `AuthResponse` (de `register`/`login`) **ya no tiene el campo `token`**. Se reemplazó
+> por `accessToken` + `refreshToken` + `tokenType` + `expiresIn`. Cualquier código de
+> frontend que lea `response.token` va a romperse (va a quedar `undefined`) hasta que se
+> adapte. **AuthContext/el API client de Cursor va a necesitar cambios** para:
+> - leer `accessToken` (no `token`) del response de `register`/`login`,
+> - guardar también `refreshToken`,
+> - llamar a `POST /api/auth/refresh` cuando el access token expire (ya no alcanza con
+>   "reintentar login" ni con esperar 24hs de vida como antes),
+> - manejar el logout llamando a `POST /api/auth/logout` (antes era 100% client-side).
+>
+> **La estrategia de almacenamiento del `refreshToken` en el browser todavía NO está
+> decidida** (`localStorage` vs. cookie `HttpOnly` vs. otra cosa) — eso se define en
+> **Fase 1.6**. No asumir `localStorage` como decisión final; implementar de forma que
+> sea fácil de migrar (ej. no esparcir `localStorage.getItem` por todos lados, centralizar
+> el acceso al refresh token en un solo módulo).
+
+1. `POST /api/auth/register` o `POST /api/auth/login` devuelven:
+   ```json
+   { "accessToken": "...", "refreshToken": "...", "tokenType": "Bearer", "expiresIn": 900, "username": "...", "role": "USER" }
    ```
-   Authorization: Bearer <token>
+2. Guardar `accessToken` y enviarlo en **todas** las requests autenticadas como:
+   ```
+   Authorization: Bearer <accessToken>
    ```
    (configurar como interceptor de Axios, no adjuntarlo a mano en cada llamada).
-3. **No hay endpoint de refresh ni de logout server-side.** El logout es 100%
-   client-side: borrar el token guardado y, si hay socket abierto, desconectarlo. La
-   expiración default es 24hs (`JWT_EXPIRATION_MS`); al expirar, cualquier request
-   autenticada devuelve `401` — el interceptor de Axios debe capturar eso y redirigir a
-   login.
-4. El campo `username` de la respuesta de auth **no es el email** — es un handle
+3. **El access token dura poco: 15 minutos** (`expiresIn: 900`, segundos). Esto es a
+   propósito — antes duraba 24hs, ahora esa vida larga la cubre el `refreshToken`
+   (30 días). El frontend necesita manejar la renovación:
+   - Cuando una request autenticada devuelve `401`, llamar a
+     `POST /api/auth/refresh` con `{ "refreshToken": "..." }`.
+   - La respuesta trae `accessToken` **y `refreshToken` nuevos** — reemplazar **ambos**
+     en el storage, nunca reusar el `refreshToken` viejo (queda inutilizado
+     automáticamente apenas se usa una vez — ver "Rotación" en `API_CONTRACT.md` §
+     `/api/auth/refresh`).
+   - Si el refresh también falla (`400`/`409`), la sesión ya no es recuperable — limpiar
+     el storage y redirigir a login. No reintentar el mismo `refreshToken` de nuevo.
+   - Patrón recomendado: interceptor de Axios que, ante un `401`, dispare el refresh una
+     única vez y reintente la request original con el `accessToken` nuevo; si el refresh
+     falla, recién ahí redirigir a login.
+4. **Logout real**: llamar a `POST /api/auth/logout` con `{ "refreshToken": "..." }`
+   antes de limpiar el storage local y desconectar el WebSocket si hay uno abierto. Esto
+   invalida la sesión del lado del servidor (antes, Fase <1.5, el logout era 100%
+   client-side y no invalidaba nada server-side). El endpoint es tolerante — llamarlo con
+   un `refreshToken` ya vencido o inexistente no es un error, siempre responde `200`.
+5. **Multi-dispositivo**: cada login (celular, PC, otra pestaña) es una sesión
+   independiente con su propio `refreshToken`. Loguearse de nuevo en un dispositivo
+   **no** cierra la sesión de otro. Logout en un dispositivo tampoco afecta a los demás.
+6. **Cambiar o resetear la contraseña cierra TODAS las sesiones** (todos los
+   dispositivos, incluido el que hizo el cambio) — después de un `change-password` o
+   `reset-password` exitoso, cualquier intento de `/api/auth/refresh` con un
+   `refreshToken` emitido antes va a fallar con `400` (`"Refresh token has been
+   revoked"`). El frontend debe tratar ese caso igual que cualquier otro refresh
+   fallido: limpiar sesión y mandar a login. Esto es intencional (ver
+   `API_CONTRACT.md` § `change-password`/`reset-password`), no un bug a reportar.
+7. El campo `username` de la respuesta de auth **no es el email** — es un handle
    autogenerado (slug del `displayName`). Si la UI necesita mostrar el email del usuario
    logueado, pedirlo aparte con `GET /api/users/me`.
-5. El mismo token JWT sirve para REST y para WebSocket (ver abajo) — no hay tokens
-   separados por canal.
+8. El access token (JWT) sigue sirviendo para REST y para WebSocket (ver abajo) — no hay
+   tokens separados por canal. El `refreshToken` **nunca** se usa para WebSocket ni para
+   ninguna request REST directamente (no es un Bearer token, es solo el input de
+   `/refresh` y `/logout`).
 
 ### `email` vs `username` — importante, se confunde fácil
 
@@ -81,9 +126,9 @@ construir:
   el frontend no debe intentar distinguir estos casos ni mostrar un error específico por
   "email no encontrado" (ver `API_CONTRACT.md` § `resend-verification`, prevención de
   account enumeration).
-- **Qué mantiene register**: sigue creando el usuario, devolviendo `token` (JWT) y
-  dejando al usuario autenticable de inmediato — **no cambia nada de lo que el frontend
-  ya hace hoy** con `POST /api/auth/register`.
+- **Qué mantiene register**: sigue creando el usuario y devolviendo tokens (`accessToken`
+  + `refreshToken`, ver § Autenticación y manejo de sesión arriba), dejando al usuario
+  autenticable de inmediato.
 - **Qué mantiene login**: sin cambios. Un usuario con `emailVerified: false` puede
   loguearse normalmente — **no hay ninguna restricción de acceso** por email no
   verificado en esta fase (ni en login, ni en ningún otro endpoint).
@@ -99,7 +144,7 @@ construir:
   se puede mostrar opcionalmente un indicador informativo ("verificá tu email") basado
   en `emailVerified`, con un botón que dispare `resend-verification`.
 - **Fuera de alcance de esta fase** (no implementar todavía): forgot/reset password,
-  cambio de contraseña, refresh tokens.
+  cambio de contraseña. (Refresh tokens ya existen desde Fase 1.5, ver arriba.)
 
 ## Recuperación de contraseña (Fase 1.3)
 
@@ -135,12 +180,10 @@ endpoints son públicos (sin JWT).
   email informativo ("tu contraseña fue cambiada"). No hay nada que construir en el
   frontend para esto.
 - **Limitación conocida a comunicar si corresponde**: un JWT emitido antes del reset
-  sigue siendo válido hasta su expiración natural (24hs). No hay revocación de
-  sesiones todavía (llega en una fase posterior) — no es necesario que el frontend
-  haga nada especial por esto, es una limitación de backend documentada.
-- **Fuera de alcance de esta fase** (no implementar todavía): cambio de contraseña
-  autenticado (desde el perfil, con la contraseña actual), refresh tokens, logout
-  global / revocación de sesiones.
+  sigue siendo válido hasta su expiración natural (máximo 15 minutos desde Fase 1.5).
+  **Desde Fase 1.5, un reset SÍ revoca todas las sesiones** (todos los `refreshToken`
+  del usuario) — ver § Autenticación y manejo de sesión arriba para cómo debe
+  reaccionar el frontend cuando un refresh falla por esto.
 
 ## Cambio de contraseña autenticado (Fase 1.4)
 
@@ -165,8 +208,7 @@ cuenta/seguridad. No confundir los dos flujos ni reusar la misma pantalla.
 - **Política de `newPassword`**: misma regla que registro y reset (mínimo 8
   caracteres) — reusar la misma validación de formulario que ya existe.
 - **Response 200 exitosa**: `{ "message": "Password changed successfully." }` — **no**
-  devuelve un JWT nuevo. El usuario sigue autenticado con el mismo token que ya tenía
-  (no hace falta re-loguear ni refrescar el token en el cliente).
+  devuelve tokens nuevos.
 - **Errores a manejar en la UI**:
   - `401 Unauthorized` — el JWT expiró o no es válido; tratarlo igual que cualquier
     otro 401 (redirigir a login), no es específico de este endpoint.
@@ -180,12 +222,14 @@ cuenta/seguridad. No confundir los dos flujos ni reusar la misma pantalla.
 - **Email de confirmación**: tras un cambio exitoso el backend manda automáticamente
   un email informativo ("tu contraseña fue cambiada") — mismo email que ya dispara
   `reset-password`. No hay nada que construir en el frontend para esto.
-- **Limitación conocida a comunicar si corresponde**: igual que en reset-password, un
-  JWT emitido antes del cambio (incluido el que se está usando para hacer este mismo
-  request) sigue siendo válido hasta su expiración natural. No hay revocación de
-  sesiones todavía.
-- **Fuera de alcance de esta fase**: refresh tokens, logout global / revocación de
-  sesiones (llega en Fase 1.5).
+- **Revoca todas las sesiones (Fase 1.5)**: un cambio exitoso cierra **todas** las
+  sesiones del usuario, incluida la que hizo este mismo request — el access token
+  (JWT) en uso sigue funcionando hasta que expire naturalmente (máximo 15 minutos),
+  pero **el frontend debe tratar este caso como un logout inmediato de todas las
+  sesiones**: limpiar `accessToken`/`refreshToken` guardados y redirigir a login
+  apenas se reciba la respuesta `200` de `change-password`, sin esperar a que el
+  próximo refresh falle — ya se sabe de antemano que el `refreshToken` guardado va a
+  quedar inválido.
 
 ## Endpoints disponibles
 
@@ -194,7 +238,7 @@ Resumen de superficie por dominio:
 
 | Dominio | Base path | Notas rápidas |
 |---|---|---|
-| Auth | `/api/auth` | público (register/login/verify-email/resend-verification/forgot-password/reset-password), salvo `change-password` que requiere JWT |
+| Auth | `/api/auth` | público (register/login/verify-email/resend-verification/forgot-password/reset-password/refresh/logout), salvo `change-password` que requiere JWT |
 | Users | `/api/users` | perfil propio/ajeno, discover, avatar |
 | Posts | `/api/posts` | CRUD + feed + apoyo ("like") |
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |
