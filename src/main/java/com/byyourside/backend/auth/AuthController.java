@@ -1,6 +1,8 @@
 package com.byyourside.backend.auth;
 
 import com.byyourside.backend.auth.dto.AuthResponse;
+import com.byyourside.backend.auth.dto.ChangePasswordRequest;
+import com.byyourside.backend.auth.dto.ChangePasswordResponse;
 import com.byyourside.backend.auth.dto.EmailVerificationResponse;
 import com.byyourside.backend.auth.dto.ForgotPasswordRequest;
 import com.byyourside.backend.auth.dto.ForgotPasswordResponse;
@@ -11,10 +13,12 @@ import com.byyourside.backend.auth.dto.ResendVerificationResponse;
 import com.byyourside.backend.auth.dto.ResetPasswordRequest;
 import com.byyourside.backend.auth.dto.ResetPasswordResponse;
 import com.byyourside.backend.auth.dto.VerifyEmailRequest;
+import com.byyourside.backend.security.UserPrincipal;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -28,6 +32,7 @@ public class AuthController {
     private final AuthService authService;
     private final EmailVerificationService emailVerificationService;
     private final PasswordResetService passwordResetService;
+    private final ChangePasswordService changePasswordService;
 
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
@@ -64,5 +69,16 @@ public class AuthController {
     @PostMapping("/reset-password")
     public ResponseEntity<ResetPasswordResponse> resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
         return ResponseEntity.ok(passwordResetService.resetPassword(request.token(), request.newPassword()));
+    }
+
+    // Unico endpoint de /api/auth que requiere JWT -- ver SecurityConfig. La
+    // identidad sale exclusivamente de `principal` (resuelto por el filtro
+    // JWT), nunca de un campo del body: no hay forma de pedir el cambio de
+    // contrasena de otro usuario a traves de este request.
+    @PostMapping("/change-password")
+    public ResponseEntity<ChangePasswordResponse> changePassword(@AuthenticationPrincipal UserPrincipal principal,
+                                                                  @Valid @RequestBody ChangePasswordRequest request) {
+        return ResponseEntity.ok(changePasswordService.changePassword(
+                principal, request.currentPassword(), request.newPassword()));
     }
 }

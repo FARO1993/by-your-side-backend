@@ -305,6 +305,68 @@ Aplica el cambio de contraseña a partir del token recibido por email en
   emitido antes del reset conserva acceso hasta que ese JWT expire por sí solo, aunque
   la contraseña ya haya sido cambiada.
 
+### `POST /api/auth/change-password` (Fase 1.4) — requiere autenticación
+
+Cambia la contraseña de la cuenta **ya autenticada**. Distinto de `reset-password`:
+este flujo es para un usuario que todavía tiene acceso a su cuenta y conoce su
+contraseña actual, no para alguien que la perdió. Es el **único** endpoint bajo
+`/api/auth` que requiere JWT — todos los demás (`register`, `login`, `verify-email`,
+`resend-verification`, `forgot-password`, `reset-password`) siguen siendo públicos.
+
+- **Auth**: **requerida**. Header `Authorization: Bearer <token>`. Sin token o con un
+  token inválido/expirado, responde `401 Unauthorized` (mismo formato que cualquier
+  otro endpoint autenticado) y la request nunca llega al service — ver
+  `BACKEND_ARCHITECTURE.md` § Seguridad.
+- **Método**: `POST`, no `PATCH`, por consistencia con el resto de `/api/auth` — ese
+  namespace modela **acciones/comandos** (`register`, `login`, `verify-email`, etc.),
+  todas con `POST`, a diferencia de `/api/users/me` que sí usa `PATCH` porque modela la
+  actualización de un recurso (el perfil). `change-password` es conceptualmente más
+  cercana a un comando ("ejecutá el cambio de contraseña") que a una actualización de
+  recurso parcial.
+- **Identidad**: se resuelve **exclusivamente** del `Authentication` en el
+  `SecurityContext` (vía `@AuthenticationPrincipal UserPrincipal`), nunca de un campo
+  del body. El `Body` no tiene `userId`, `email` ni `username` — no hay forma de pedir
+  el cambio de contraseña de otra cuenta manipulando el request; cualquier campo extra
+  que el cliente agregue es ignorado.
+- **Body** (`ChangePasswordRequest`):
+  ```json
+  { "currentPassword": "...", "newPassword": "al menos 8 caracteres" }
+  ```
+  - `currentPassword`: obligatorio (`@NotBlank`).
+  - `newPassword`: obligatorio, mínimo 8 caracteres — **misma política que
+    `RegisterRequest.password`/`ResetPasswordRequest.newPassword`**, no hay una tercera
+    regla distinta.
+  - El backend **no** pide una confirmación de la nueva contraseña
+    (`confirmNewPassword`) — esa validación de "ambos campos coinciden" es
+    responsabilidad exclusiva del frontend, no existe como campo en este contrato.
+- **Response 200** (`ChangePasswordResponse`):
+  ```json
+  { "message": "Password changed successfully." }
+  ```
+  No devuelve un JWT nuevo — el JWT ya en uso del cliente sigue siendo válido tal cual
+  (ver limitación de JWT preexistentes más abajo), no hace falta volver a loguearse.
+- **Reglas**:
+  - `currentPassword` debe matchear (`PasswordEncoder.matches`) el hash actualmente
+    guardado.
+  - `newPassword` **no puede ser igual** a `currentPassword` (comparado también con
+    `PasswordEncoder.matches`, nunca comparando hashes directamente — BCrypt genera un
+    salt distinto en cada `encode`, así que dos hashes de la misma contraseña nunca son
+    iguales entre sí).
+- **Errores**:
+  - `401 Unauthorized` — sin JWT o JWT inválido/expirado.
+  - `400 Bad Request` — `currentPassword` incorrecta (`"Current password is
+    incorrect"`), `newPassword` inválida (`fieldErrors.newPassword`), o `newPassword`
+    igual a la actual (`"New password must be different from the current password"`).
+    Ninguno de estos casos modifica la contraseña ni dispara el email de confirmación.
+- **Email de confirmación**: reutiliza `EmailService.sendPasswordChangedEmail` (el
+  mismo método que ya usa `reset-password` desde Fase 1.3 — no se creó una segunda
+  abstracción). Mismo comportamiento "best effort": si Resend falla, **no revierte** el
+  cambio de contraseña ya aplicado, el fallo solo queda logueado server-side.
+- **Limitación conocida — JWT preexistentes**: igual que en `reset-password`, cualquier
+  JWT emitido antes del cambio (incluido el que se usó para autenticar esta misma
+  request) sigue siendo válido hasta su expiración natural. Fase 1.4 no implementa
+  revocación/versionado de tokens — eso queda para **Fase 1.5 — Session Security**.
+
 ---
 
 ## 2. Users (`/api/users`) — requiere autenticación

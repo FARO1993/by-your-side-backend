@@ -142,6 +142,51 @@ endpoints son públicos (sin JWT).
   autenticado (desde el perfil, con la contraseña actual), refresh tokens, logout
   global / revocación de sesiones.
 
+## Cambio de contraseña autenticado (Fase 1.4)
+
+Distinto de "olvidé mi contraseña": esta pantalla es para un usuario que **ya está
+logueado** y **conoce** su contraseña actual — típicamente dentro de
+cuenta/seguridad. No confundir los dos flujos ni reusar la misma pantalla.
+
+- **Endpoint**: `POST /api/auth/change-password`, **requiere JWT** (`Authorization:
+  Bearer <token>` — es el único endpoint bajo `/api/auth` que lo requiere, todos los
+  demás de esa sección son públicos).
+- **Formulario**: tres campos visualmente — Current password, New password, Confirm
+  new password — pero el backend **solo** recibe dos:
+  ```json
+  { "currentPassword": "...", "newPassword": "..." }
+  ```
+  La confirmación de "las dos contraseñas nuevas coinciden" es una validación
+  **puramente del frontend**, antes de llamar a la API — el backend no tiene (ni va a
+  tener) un campo `confirmNewPassword`.
+- **Identidad**: nunca se manda `email`/`username`/`userId` en el body — la cuenta a
+  modificar es siempre la del JWT usado en el header. No hay forma (ni necesidad) de
+  parametrizar de quién es la cuenta.
+- **Política de `newPassword`**: misma regla que registro y reset (mínimo 8
+  caracteres) — reusar la misma validación de formulario que ya existe.
+- **Response 200 exitosa**: `{ "message": "Password changed successfully." }` — **no**
+  devuelve un JWT nuevo. El usuario sigue autenticado con el mismo token que ya tenía
+  (no hace falta re-loguear ni refrescar el token en el cliente).
+- **Errores a manejar en la UI**:
+  - `401 Unauthorized` — el JWT expiró o no es válido; tratarlo igual que cualquier
+    otro 401 (redirigir a login), no es específico de este endpoint.
+  - `400 Bad Request` con `"Current password is incorrect"` — mostrar el error debajo
+    del campo "Current password", **no** revelar más detalle.
+  - `400 Bad Request` con `"New password must be different from the current
+    password"` — mostrar el error debajo del campo "New password".
+  - `400 Bad Request` con `fieldErrors.newPassword` — la política de longitud no se
+    cumplió (debería quedar cubierto por la validación del propio formulario antes de
+    llamar a la API, pero el backend la vuelve a validar de todos modos).
+- **Email de confirmación**: tras un cambio exitoso el backend manda automáticamente
+  un email informativo ("tu contraseña fue cambiada") — mismo email que ya dispara
+  `reset-password`. No hay nada que construir en el frontend para esto.
+- **Limitación conocida a comunicar si corresponde**: igual que en reset-password, un
+  JWT emitido antes del cambio (incluido el que se está usando para hacer este mismo
+  request) sigue siendo válido hasta su expiración natural. No hay revocación de
+  sesiones todavía.
+- **Fuera de alcance de esta fase**: refresh tokens, logout global / revocación de
+  sesiones (llega en Fase 1.5).
+
 ## Endpoints disponibles
 
 Ver `API_CONTRACT.md` para el detalle completo (request/response/reglas/errores).
@@ -149,7 +194,7 @@ Resumen de superficie por dominio:
 
 | Dominio | Base path | Notas rápidas |
 |---|---|---|
-| Auth | `/api/auth` | público, register/login/verify-email/forgot-password/reset-password |
+| Auth | `/api/auth` | público (register/login/verify-email/resend-verification/forgot-password/reset-password), salvo `change-password` que requiere JWT |
 | Users | `/api/users` | perfil propio/ajeno, discover, avatar |
 | Posts | `/api/posts` | CRUD + feed + apoyo ("like") |
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |

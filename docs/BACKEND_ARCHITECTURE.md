@@ -23,7 +23,9 @@ com.byyourside.backend
 ├── admin           AdminUserController (+ dto) — gestión de roles, solo ADMIN
 ├── auth            AuthController, AuthService (+ dto) — registro/login, público.
 │                   EmailVerificationService/Token(Repository) — verificación de email.
-│                   PasswordResetService/Token(Repository) — recuperación de contraseña
+│                   PasswordResetService/Token(Repository) — recuperación de contraseña.
+│                   ChangePasswordService — cambio de contraseña autenticado (único
+│                   endpoint de /api/auth que requiere JWT)
 ├── availability    Modo compañía: Availability, CompanionIntent
 ├── chat            Conversation, Message — REST + push WebSocket
 ├── comment         Comment, CommentStatus — anidado bajo /api/posts/{postId}/comments
@@ -138,6 +140,14 @@ queries que arman listados (para evitar N+1).
 - **CORS**: configurado centralizadamente en `SecurityConfig` (orígenes desde
   `CORS_ALLOWED_ORIGINS`), reutilizado también por `WebSocketConfig` para el handshake
   del endpoint `/ws`.
+- **`/api/auth/**` no es uniformemente público**: la regla base es
+  `requestMatchers("/api/auth/**").permitAll()`, pero **antes** de esa regla (Spring
+  Security evalúa `requestMatchers` en orden, primera coincidencia gana) hay una regla
+  específica `requestMatchers(HttpMethod.POST, "/api/auth/change-password").authenticated()`
+  (Fase 1.4). Es el único endpoint del namespace `/api/auth` que requiere JWT. Si se
+  agrega un endpoint nuevo bajo `/api/auth` que también deba requerir autenticación, hay
+  que repetir este patrón (regla específica antes del `permitAll` amplio), no asumir que
+  alcanza con chequear la autenticación a mano dentro del controller/service.
 
 ## Persistencia
 
@@ -205,7 +215,11 @@ antecedente.
 - Cuatro casos de uso actuales: `sendVerificationEmail` (tras registro y tras
   `resend-verification`), `sendWelcomeEmail` (tras la primera verificación exitosa),
   `sendPasswordResetEmail` (tras `forgot-password`, Fase 1.3) y
-  `sendPasswordChangedEmail` (tras un `reset-password` exitoso, Fase 1.3).
+  `sendPasswordChangedEmail`, que se dispara desde **dos services distintos**:
+  `PasswordResetService` (tras un `reset-password` exitoso, Fase 1.3) y
+  `ChangePasswordService` (tras un `change-password` exitoso, Fase 1.4) — mismo método
+  reutilizado, sin una segunda abstracción, porque el mensaje ("tu contraseña fue
+  cambiada") es idéntico sin importar cuál de los dos flujos lo originó.
 - **Sin credenciales configuradas** (`RESEND_API_KEY` vacío, default en dev/test): el
   envío es un no-op silencioso (se loguea a nivel `debug`), no un error — igual que
   Cloudinary con sus credenciales, pero sin lanzar excepción, para no requerir mockear
@@ -214,11 +228,12 @@ antecedente.
   responde): `ResendEmailService` lanza `EmailDeliveryException` (unchecked). El
   contenido del email, el `RESEND_API_KEY` y el verification token nunca se loguean —
   solo el motivo del fallo.
-- **Resiliencia**: tanto `EmailVerificationService` como `PasswordResetService` (Fase
-  1.3) capturan `EmailDeliveryException` alrededor de cada envío y solo loguean un
-  warning (`log.warn`) — nunca revierten la operación de negocio que originó el envío.
-  Una caída de Resend no tumba un registro válido (`issue`), una verificación válida
-  (`verify`), una solicitud de `forgot-password` ni un `reset-password` ya aplicado. El
+- **Resiliencia**: `EmailVerificationService`, `PasswordResetService` (Fase 1.3) y
+  `ChangePasswordService` (Fase 1.4) capturan `EmailDeliveryException` alrededor de
+  cada envío y solo loguean un warning (`log.warn`) — nunca revierten la operación de
+  negocio que originó el envío. Una caída de Resend no tumba un registro válido
+  (`issue`), una verificación válida (`verify`), una solicitud de `forgot-password`, un
+  `reset-password` ya aplicado, ni un `change-password` ya aplicado. El
   usuario/token/verificación/contraseña ya quedaron persistidos antes del intento de
   envío.
 - Variables de entorno: `RESEND_API_KEY` (vacío por default), `MAIL_FROM` (dirección
