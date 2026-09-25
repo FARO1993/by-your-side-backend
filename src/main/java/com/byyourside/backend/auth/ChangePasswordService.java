@@ -28,6 +28,7 @@ public class ChangePasswordService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailService emailService;
+    private final AuthSessionService authSessionService;
 
     @Transactional
     public ChangePasswordResponse changePassword(UserPrincipal principal, String currentPassword, String newPassword) {
@@ -48,6 +49,15 @@ public class ChangePasswordService {
 
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         userRepository.save(user);
+
+        // Decision de producto (Fase 1.5): cambiar la contrasena cierra
+        // TODAS las sesiones del usuario, incluida la que hizo este mismo
+        // request -- el access JWT en uso puede seguir siendo valido hasta
+        // que expire (no hay blacklist), pero ningun refresh token anterior
+        // vuelve a poder emitir accesos nuevos. Misma transaccion que el
+        // cambio de contrasena: si algo fallara aca, se revierte junto con
+        // el resto.
+        authSessionService.revokeAllForUser(user.getId());
 
         try {
             emailService.sendPasswordChangedEmail(user.getEmail(), user.getDisplayName());

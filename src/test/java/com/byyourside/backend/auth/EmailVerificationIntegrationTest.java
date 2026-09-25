@@ -52,6 +52,9 @@ class EmailVerificationIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private EmailVerificationTokenRepository tokenRepository;
 
     @Autowired
@@ -71,6 +74,7 @@ class EmailVerificationIntegrationTest {
     @BeforeEach
     void cleanUp() {
         tokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
         userRepository.deleteAll();
     }
 
@@ -145,7 +149,7 @@ class EmailVerificationIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(loginBody))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.token").isNotEmpty());
+                .andExpect(jsonPath("$.accessToken").isNotEmpty());
     }
 
     @Test

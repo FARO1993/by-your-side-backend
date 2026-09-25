@@ -7,6 +7,10 @@ import com.byyourside.backend.auth.dto.EmailVerificationResponse;
 import com.byyourside.backend.auth.dto.ForgotPasswordRequest;
 import com.byyourside.backend.auth.dto.ForgotPasswordResponse;
 import com.byyourside.backend.auth.dto.LoginRequest;
+import com.byyourside.backend.auth.dto.LogoutRequest;
+import com.byyourside.backend.auth.dto.LogoutResponse;
+import com.byyourside.backend.auth.dto.RefreshRequest;
+import com.byyourside.backend.auth.dto.RefreshResponse;
 import com.byyourside.backend.auth.dto.RegisterRequest;
 import com.byyourside.backend.auth.dto.ResendVerificationRequest;
 import com.byyourside.backend.auth.dto.ResendVerificationResponse;
@@ -33,6 +37,7 @@ public class AuthController {
     private final EmailVerificationService emailVerificationService;
     private final PasswordResetService passwordResetService;
     private final ChangePasswordService changePasswordService;
+    private final AuthSessionService authSessionService;
 
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
@@ -80,5 +85,22 @@ public class AuthController {
                                                                   @Valid @RequestBody ChangePasswordRequest request) {
         return ResponseEntity.ok(changePasswordService.changePassword(
                 principal, request.currentPassword(), request.newPassword()));
+    }
+
+    // Publico a proposito: se usa precisamente cuando el access token ya
+    // expiro, asi que no puede requerir uno valido. La sesion se identifica
+    // exclusivamente por el refresh token del body, nunca por un JWT.
+    @PostMapping("/refresh")
+    public ResponseEntity<RefreshResponse> refresh(@Valid @RequestBody RefreshRequest request) {
+        return ResponseEntity.ok(authSessionService.refresh(request.refreshToken()));
+    }
+
+    // Publico a proposito, mismo criterio que /refresh: identificado
+    // exclusivamente por el refresh token, no requiere (ni chequea) un JWT
+    // vigente -- se puede cerrar sesion incluso con el access token ya
+    // vencido, mientras se conserve el refresh token.
+    @PostMapping("/logout")
+    public ResponseEntity<LogoutResponse> logout(@Valid @RequestBody LogoutRequest request) {
+        return ResponseEntity.ok(authSessionService.logout(request.refreshToken()));
     }
 }

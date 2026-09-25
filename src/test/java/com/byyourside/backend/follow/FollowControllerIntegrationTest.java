@@ -1,6 +1,7 @@
 package com.byyourside.backend.follow;
 
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.notification.NotificationRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -39,6 +40,9 @@ class FollowControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private FollowRepository followRepository;
 
     @Autowired
@@ -62,6 +66,7 @@ class FollowControllerIntegrationTest {
         notificationRepository.deleteAll();
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");
@@ -92,7 +97,7 @@ class FollowControllerIntegrationTest {
                 .getResponse()
                 .getContentAsString();
 
-        return objectMapper.readTree(response).get("token").asText();
+        return objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private record LoginPayload(String email, String password) {

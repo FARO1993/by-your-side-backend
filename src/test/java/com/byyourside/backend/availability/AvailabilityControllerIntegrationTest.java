@@ -1,6 +1,7 @@
 package com.byyourside.backend.availability;
 
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.chat.ConversationRepository;
 import com.byyourside.backend.chat.MessageRepository;
 import com.byyourside.backend.user.User;
@@ -43,6 +44,9 @@ class AvailabilityControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private AvailabilityRepository availabilityRepository;
 
     @Autowired
@@ -71,6 +75,7 @@ class AvailabilityControllerIntegrationTest {
         conversationRepository.deleteAll();
         availabilityRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");
@@ -95,7 +100,7 @@ class AvailabilityControllerIntegrationTest {
                         .content(body))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        return objectMapper.readTree(response).get("token").asText();
+        return objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private record LoginPayload(String email, String password) {

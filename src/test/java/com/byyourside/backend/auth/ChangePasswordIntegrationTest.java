@@ -46,6 +46,9 @@ class ChangePasswordIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private EmailVerificationTokenRepository emailVerificationTokenRepository;
 
     @Autowired
@@ -59,6 +62,7 @@ class ChangePasswordIntegrationTest {
     @BeforeEach
     void cleanUp() {
         emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
         userRepository.deleteAll();
     }
 
@@ -75,7 +79,7 @@ class ChangePasswordIntegrationTest {
                 .getResponse()
                 .getContentAsString();
 
-        return objectMapper.readTree(response).get("token").asText();
+        return objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private String changePasswordBody(String currentPassword, String newPassword) {
@@ -283,7 +287,7 @@ class ChangePasswordIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(loginBody("facu@example.com", "brandnewpass456")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.token").isNotEmpty());
+                .andExpect(jsonPath("$.accessToken").isNotEmpty());
     }
 
     // --- Email de confirmacion ---
@@ -336,6 +340,8 @@ class ChangePasswordIntegrationTest {
                 .andExpect(jsonPath("$.newPassword").doesNotExist())
                 .andExpect(jsonPath("$.currentPassword").doesNotExist())
                 .andExpect(jsonPath("$.token").doesNotExist())
+                .andExpect(jsonPath("$.accessToken").doesNotExist())
+                .andExpect(jsonPath("$.refreshToken").doesNotExist())
                 .andExpect(jsonPath("$.hash").doesNotExist());
     }
 

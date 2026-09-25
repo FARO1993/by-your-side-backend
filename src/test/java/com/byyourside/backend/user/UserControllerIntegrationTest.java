@@ -1,6 +1,7 @@
 package com.byyourside.backend.user;
 
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.storage.ImageStorageService;
@@ -42,6 +43,9 @@ class UserControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
     private String token;
@@ -59,6 +63,7 @@ class UserControllerIntegrationTest {
     void setUp() throws Exception {
         followRepository.deleteAll();   // ← primero: borra lo que referencia a users
         emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
         userRepository.deleteAll();     // ← ahora sí, sin FKs pendientes
 
         String registerBody = """
@@ -78,7 +83,7 @@ class UserControllerIntegrationTest {
                 .getResponse()
                 .getContentAsString();
 
-        token = objectMapper.readTree(response).get("token").asText();
+        token = objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private User registerUser(String username, String email, UserRole role) throws Exception {
