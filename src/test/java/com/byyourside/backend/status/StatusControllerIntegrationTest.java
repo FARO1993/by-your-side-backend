@@ -1,5 +1,6 @@
 package com.byyourside.backend.status;
 
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.notification.NotificationRepository;
@@ -56,6 +57,9 @@ class StatusControllerIntegrationTest {
     private NotificationRepository notificationRepository;
 
     @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @Autowired
@@ -72,6 +76,7 @@ class StatusControllerIntegrationTest {
         statusReactionRepository.deleteAll();
         statusRepository.deleteAll();
         followRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");

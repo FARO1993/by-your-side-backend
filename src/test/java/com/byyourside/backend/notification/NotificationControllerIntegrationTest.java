@@ -1,5 +1,6 @@
 package com.byyourside.backend.notification;
 
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.comment.CommentRepository;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.post.Post;
@@ -63,6 +64,9 @@ class NotificationControllerIntegrationTest {
     @Autowired
     private CommentRepository commentRepository;
 
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
     private User facu;
     private String facuToken;
     private User soumia;
@@ -75,6 +79,7 @@ class NotificationControllerIntegrationTest {
         postSupportRepository.deleteAll();
         postRepository.deleteAll();
         followRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");

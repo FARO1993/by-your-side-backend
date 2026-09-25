@@ -110,11 +110,20 @@ colisión) — el usuario nunca lo elige ni lo ve como campo de formulario en el
   ```
   **Importante**: el campo se llama `username` pero es el handle autogenerado, **no**
   el email. El frontend debe guardar `token` y puede mostrar `username` como handle,
-  pero para mostrar el email debe llamar luego a `GET /api/users/me`.
+  pero para mostrar el email debe llamar luego a `GET /api/users/me`. **Sin cambios en
+  esta forma** — la infraestructura de verificación de email (ver más abajo) no agrega
+  ni quita campos de `AuthResponse`.
 - **Errores**:
   - `409 Conflict` — email ya registrado (`"Email already registered"` o, en condición
     de carrera, `"Email already in use"`).
   - `400 Bad Request` — validación fallida (`fieldErrors` con detalle por campo).
+- **Verificación de email (Fase 1.1)**: el usuario creado queda con `emailVerified:
+  false` (ver `GET /api/users/me` en §2) y el backend emite internamente un token de
+  verificación de un solo uso, válido por 24hs. **Esta fase NO envía el email
+  real** (queda para una fase posterior) — el registro y el login **no se bloquean**
+  por tener el email sin verificar, y el token no se expone en ningún response HTTP.
+  Ver `POST /api/auth/verify-email` más abajo y `FRONTEND_HANDOFF.md` para el estado
+  exacto de qué puede/no puede hacer el frontend con esto hoy.
 
 ### `POST /api/auth/login`
 
@@ -128,11 +137,48 @@ colisión) — el usuario nunca lo elige ni lo ve como campo de formulario en el
   existe o la contraseña no matchea. También puede fallar si la cuenta está
   `SUSPENDED`/`DEACTIVATED` (Spring Security la trata como cuenta bloqueada/deshabilitada
   → 401 genérico también, el backend no distingue ese caso en el mensaje).
+- **No requiere email verificado**: un usuario con `emailVerified: false` puede loguearse
+  con total normalidad — esta fase no introduce ninguna restricción de acceso por eso.
 
 **JWT emitido**: contiene `sub` (username interno), claim `userId` (UUID string), claim
 `role`, `iat`, `exp`. Expira a las 24hs por default (`JWT_EXPIRATION_MS`, configurable).
 No hay endpoint de refresh ni de logout — el logout es puramente client-side (descartar
 el token).
+
+### `POST /api/auth/verify-email`
+
+Verifica el email de una cuenta a partir del token emitido en el registro. Endpoint
+**público** (no requiere `Authorization`) — el token en sí es la credencial.
+
+- **Auth**: no requerida.
+- **Body** (`VerifyEmailRequest`):
+  ```json
+  { "token": "el valor recibido (hoy solo vía log del servidor, ver nota abajo)" }
+  ```
+  - `token`: obligatorio (`@NotBlank`).
+- **Response 200** (`EmailVerificationResponse`):
+  ```json
+  { "emailVerified": true, "emailVerifiedAt": "2026-09-25T14:30:00Z" }
+  ```
+- **Reglas**:
+  - El token es de **un solo uso**: una vez verificado exitosamente, ese mismo token no
+    puede volver a usarse.
+  - Expira a las **24hs** de emitido.
+  - Es **idempotente respecto al usuario**: si el usuario ya estaba verificado (por
+    ejemplo, por otro token válido emitido antes) y se presenta un segundo token todavía
+    válido y sin usar, la respuesta sigue siendo `200` (el token se consume igual) y
+    `emailVerifiedAt` **no se pisa** — conserva la fecha de la primera verificación real.
+- **Errores**:
+  - `400 Bad Request` — token inexistente/inválido (`"Invalid verification token"`), o
+    body vacío/`blank` (`fieldErrors.token`).
+  - `400 Bad Request` — token válido pero expirado (`"Verification token has expired"`).
+  - `409 Conflict` — token válido pero ya usado antes (`"Verification token has already
+    been used"`) — este es el caso de "reintentar el mismo link dos veces".
+- **Qué NO hace todavía (fuera de alcance de esta fase)**: no hay envío real de email
+  (SMTP/proveedor externo), no hay endpoint de reenvío (`resend verification`), y no hay
+  ninguna restricción en el resto de la API por tener `emailVerified: false`. Ver
+  `FRONTEND_HANDOFF.md` para el detalle de cómo obtener un token para probar este flujo
+  mientras el envío real no existe.
 
 ---
 
@@ -150,9 +196,18 @@ Perfil completo del usuario autenticado, incluye email.
     "bio": "texto o null",
     "avatarUrl": "https://... o null",
     "role": "USER",
-    "createdAt": "2026-01-01T00:00:00Z"
+    "createdAt": "2026-01-01T00:00:00Z",
+    "emailVerified": false,
+    "emailVerifiedAt": "2026-01-02T09:00:00Z o null"
   }
   ```
+  **Cambio de contrato (Fase 1.1)**: `emailVerified` y `emailVerifiedAt` son campos
+  nuevos en `UserResponse` (antes no existían). Adición pura al final del objeto — no
+  rompe consumidores existentes que ignoren campos desconocidos. `emailVerifiedAt` es
+  `null` mientras `emailVerified` sea `false`. Cuentas creadas **antes** de esta fase
+  tienen `emailVerified: true` (ver `BACKEND_ARCHITECTURE.md` § Flyway/compatibilidad),
+  con `emailVerifiedAt` igual a su `createdAt` original (fecha aproximada, no una
+  verificación real que haya ocurrido).
 
 ### `PATCH /api/users/me`
 Actualiza el perfil propio. Todos los campos son opcionales (solo se aplican los

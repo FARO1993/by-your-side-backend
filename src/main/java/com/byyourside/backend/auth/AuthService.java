@@ -28,6 +28,7 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
+    private final EmailVerificationService emailVerificationService;
 
     public AuthResponse register(RegisterRequest request) {
         if (userRepository.existsByEmail(request.email())) {
@@ -48,6 +49,10 @@ public class AuthService {
         } catch (DataIntegrityViolationException ex) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already in use");
         }
+
+        // Usuario nuevo arranca sin verificar (default de la entidad) y con
+        // un token de verificacion ya emitido -- ver EmailVerificationService.
+        emailVerificationService.issue(user);
 
         UserPrincipal principal = new UserPrincipal(user);
         String token = jwtService.generateToken(principal);

@@ -21,7 +21,8 @@ subpaquete `dto/` con records de request/response.
 ```
 com.byyourside.backend
 ├── admin           AdminUserController (+ dto) — gestión de roles, solo ADMIN
-├── auth            AuthController, AuthService (+ dto) — registro/login, público
+├── auth            AuthController, AuthService (+ dto) — registro/login, público.
+│                   EmailVerificationService/Token(Repository) — verificación de email
 ├── availability    Modo compañía: Availability, CompanionIntent
 ├── chat            Conversation, Message — REST + push WebSocket
 ├── comment         Comment, CommentStatus — anidado bajo /api/posts/{postId}/comments
@@ -63,7 +64,8 @@ User (users)
  ├─ 1:N → StatusReaction como actor (status_reactions.actor_id)
  ├─ 1:N → Availability (availabilities.user_id)
  ├─ 1:N → Conversation como userA / userB (conversations.user_a_id / user_b_id)
- └─ 1:N → Message como sender (messages.sender_id)
+ ├─ 1:N → Message como sender (messages.sender_id)
+ └─ 1:N → EmailVerificationToken (email_verification_tokens.user_id)
 
 Post (posts)
  ├─ N:1 → User (author)
@@ -83,6 +85,9 @@ Conversation (conversations) — N:1 → User (userA), N:1 → User (userB), UNI
                                  (userA/userB en orden canónico por UUID string, para no duplicar
                                  la conversación sin importar quién la inició)
 Message (messages) — N:1 → Conversation, N:1 → User (sender)
+EmailVerificationToken (email_verification_tokens) — N:1 → User. Guarda tokenHash
+                        (SHA-256, no el valor real), expiresAt, usedAt (nullable =
+                        no consumido). UNIQUE(token_hash).
 ```
 
 Todas las relaciones `@ManyToOne` son `FetchType.LAZY` con `JOIN FETCH` explícito en las
@@ -146,6 +151,17 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V1__init_schema.sql` | `users`, `posts`, `comments`, `follows`, `reports`, `post_supports`, `notifications`, `statuses`, `status_reactions` |
 | `V2__add_chat_tables.sql` | `conversations`, `messages` |
 | `V3__add_availability_table.sql` | `availabilities` |
+| `V4__add_email_verification.sql` | `users.email_verified` / `users.email_verified_at`, tabla `email_verification_tokens` |
+
+**Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
+con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`
+quedan verificadas automáticamente — nunca tuvieron la posibilidad de verificar, así que
+tratarlas como "pendientes" las bloquearía sin causa) y **recién después** el `DEFAULT`
+de la columna se cambia a `FALSE`, de forma que solo afecta a las filas insertadas de ahí
+en adelante. `email_verified_at` se backfillea con `created_at` para esas cuentas
+preexistentes (fecha aproximada, no una verificación real). Este patrón (agregar con un
+default que cubra el pasado, después cambiar el default para el futuro) es el que hay
+que repetir si se agrega otra columna `NOT NULL` a `users` más adelante.
 
 `baseline-on-migrate: true`, `baseline-version: 1`. Los campos `VARCHAR` que respaldan
 enums (`type`, `status`, `reason`, etc.) **no tienen `CHECK` constraint** a propósito —

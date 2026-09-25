@@ -1,5 +1,6 @@
 package com.byyourside.backend.post;
 
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.support.PostSupportRepository;
@@ -56,6 +57,9 @@ class PostControllerIntegrationTest {
     @Autowired
     private PostSupportRepository postSupportRepository;
 
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
     private User mainUser;
     private String mainUserToken;
     private String moderatorToken;
@@ -65,6 +69,7 @@ class PostControllerIntegrationTest {
         postSupportRepository.deleteAll();
         postRepository.deleteAll();
         followRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
         userRepository.deleteAll();
 
         mainUser = registerUser("facu", "facu@example.com", UserRole.USER);

@@ -1,8 +1,10 @@
 package com.byyourside.backend.auth;
 
 import com.byyourside.backend.auth.dto.AuthResponse;
+import com.byyourside.backend.auth.dto.EmailVerificationResponse;
 import com.byyourside.backend.auth.dto.LoginRequest;
 import com.byyourside.backend.auth.dto.RegisterRequest;
+import com.byyourside.backend.auth.dto.VerifyEmailRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -18,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private final AuthService authService;
+    private final EmailVerificationService emailVerificationService;
 
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
@@ -28,5 +31,10 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request) {
         return ResponseEntity.ok(authService.login(request));
+    }
+
+    @PostMapping("/verify-email")
+    public ResponseEntity<EmailVerificationResponse> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
+        return ResponseEntity.ok(emailVerificationService.verify(request.token()));
     }
 }
