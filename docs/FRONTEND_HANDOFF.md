@@ -59,40 +59,47 @@ username = handle interno/autogenerado (slug de displayName), usado internamente
 `AuthResponse.username` (de `register`/`login`) es el **handle**, no el email. No
 mostrar ese valor como si fuera el email del usuario en ningún lado de la UI.
 
-## Verificación de email (Fase 1.1)
+## Verificación de email (Fase 1.2)
 
-Infraestructura backend lista; **el envío real del correo todavía no existe** (queda
-para una fase posterior). Esto es lo que el frontend puede construir ya mismo y lo que
-todavía no:
+El envío real de email (vía Resend) ya existe. Esto es lo que el frontend puede
+construir:
 
-- **Cómo saber si el usuario verificó su email**: `GET /api/users/me` ahora devuelve
+- **Cómo saber si el usuario verificó su email**: `GET /api/users/me` devuelve
   `emailVerified: boolean` y `emailVerifiedAt: string | null`. Es el único lugar donde
   se expone — no está en `PublicUserProfileResponse`, `DiscoverUserResponse` ni
   `UserSummary` (es información privada de la propia cuenta, igual que `email`).
-- **Endpoint de verificación**: `POST /api/auth/verify-email`, público (sin JWT), body
-  `{ "token": "..." }`, responde `200` con
-  `{ "emailVerified": true, "emailVerifiedAt": "..." }` si el token es válido. Ver
-  `API_CONTRACT.md` §1 para los casos de error (`400` token inválido/expirado, `409`
+- **Flujo real de punta a punta**: al registrarse, el backend manda un email con un link
+  a `{APP_FRONTEND_URL}/verify-email?token=...`. El frontend necesita una ruta
+  `/verify-email` que lea `token` de la query string y llame a
+  `POST /api/auth/verify-email` con `{ "token": "..." }`. Ver `API_CONTRACT.md` §1 para
+  la respuesta y los casos de error (`400` token inválido/expirado/invalidado, `409`
   token ya usado).
+- **Reenvío de verificación**: `POST /api/auth/resend-verification` con
+  `{ "email": "..." }` — útil para una pantalla "no recibiste el email" o "reenviar
+  verificación". La respuesta es **siempre** el mismo mensaje genérico `200`, sin
+  importar si el email existe, ya está verificado, o fue reenviado hace menos de 60s —
+  el frontend no debe intentar distinguir estos casos ni mostrar un error específico por
+  "email no encontrado" (ver `API_CONTRACT.md` § `resend-verification`, prevención de
+  account enumeration).
 - **Qué mantiene register**: sigue creando el usuario, devolviendo `token` (JWT) y
   dejando al usuario autenticable de inmediato — **no cambia nada de lo que el frontend
   ya hace hoy** con `POST /api/auth/register`.
 - **Qué mantiene login**: sin cambios. Un usuario con `emailVerified: false` puede
   loguearse normalmente — **no hay ninguna restricción de acceso** por email no
   verificado en esta fase (ni en login, ni en ningún otro endpoint).
-- **Cómo probar el flujo hoy, sin email real**: el backend genera el token al registrar
-  pero **no lo devuelve en ningún response HTTP** (es un secreto de un solo uso; exponerlo
-  por API anularía el propósito de "probar que el usuario recibió el correo" que tendrá
-  en la fase siguiente). Por ahora el token solo queda logueado server-side
-  (`log.info` en `EmailVerificationService`) — para QA/desarrollo, hay que mirar los
-  logs del backend después de registrar un usuario. **No hay banner ni bloqueo de UI
-  que implementar todavía** por email sin verificar; se puede mostrar opcionalmente un
-  indicador informativo ("verificá tu email") basado en `emailVerified`, sin más.
-- **Lo que falta para Fase 1.2** (no implementar todavía): envío real del email
-  (SMTP/proveedor externo), email de bienvenida, reenvío de verificación
-  (`resend verification`), y recién ahí tendría sentido construir la UI completa del
-  flujo (pantalla "revisá tu correo", link que abre `/verify-email?token=...` en el
-  frontend y éste llama al backend, etc.).
+- **Email de bienvenida**: se manda automáticamente (server-side, sin acción del
+  frontend) la primera vez que un usuario verifica su cuenta. No hay nada que construir
+  en el frontend para esto.
+- **Cómo probar el flujo en dev sin credenciales de Resend**: si `RESEND_API_KEY` no
+  está seteada, el backend no manda el email real (no falla, es un no-op) y el token
+  sigue sin exponerse por ningún response HTTP — para probar el flujo completo en dev
+  hace falta una `RESEND_API_KEY` real o generar el token a mano desde un test/consulta
+  a la base.
+- **UI opcional**: no hay banner ni bloqueo de UI obligatorio por email sin verificar;
+  se puede mostrar opcionalmente un indicador informativo ("verificá tu email") basado
+  en `emailVerified`, con un botón que dispare `resend-verification`.
+- **Fuera de alcance de esta fase** (no implementar todavía): forgot/reset password,
+  cambio de contraseña, refresh tokens.
 
 ## Endpoints disponibles
 

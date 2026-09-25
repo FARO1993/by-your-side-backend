@@ -4,6 +4,8 @@ import com.byyourside.backend.auth.dto.AuthResponse;
 import com.byyourside.backend.auth.dto.EmailVerificationResponse;
 import com.byyourside.backend.auth.dto.LoginRequest;
 import com.byyourside.backend.auth.dto.RegisterRequest;
+import com.byyourside.backend.auth.dto.ResendVerificationRequest;
+import com.byyourside.backend.auth.dto.ResendVerificationResponse;
 import com.byyourside.backend.auth.dto.VerifyEmailRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -36,5 +38,14 @@ public class AuthController {
     @PostMapping("/verify-email")
     public ResponseEntity<EmailVerificationResponse> verifyEmail(@Valid @RequestBody VerifyEmailRequest request) {
         return ResponseEntity.ok(emailVerificationService.verify(request.token()));
+    }
+
+    // Respuesta siempre generica a proposito -- no distingue email
+    // inexistente, ya verificado, o rate-limited (ver EmailVerificationService).
+    @PostMapping("/resend-verification")
+    public ResponseEntity<ResendVerificationResponse> resendVerification(@Valid @RequestBody ResendVerificationRequest request) {
+        emailVerificationService.resendVerification(request.email());
+        return ResponseEntity.ok(new ResendVerificationResponse(
+                "If an account with that email needs verification, we've sent a new email."));
     }
 }

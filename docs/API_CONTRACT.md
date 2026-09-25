@@ -111,19 +111,21 @@ colisión) — el usuario nunca lo elige ni lo ve como campo de formulario en el
   **Importante**: el campo se llama `username` pero es el handle autogenerado, **no**
   el email. El frontend debe guardar `token` y puede mostrar `username` como handle,
   pero para mostrar el email debe llamar luego a `GET /api/users/me`. **Sin cambios en
-  esta forma** — la infraestructura de verificación de email (ver más abajo) no agrega
-  ni quita campos de `AuthResponse`.
+  esta forma** — la infraestructura de verificación de email no agrega ni quita campos
+  de `AuthResponse`.
 - **Errores**:
   - `409 Conflict` — email ya registrado (`"Email already registered"` o, en condición
     de carrera, `"Email already in use"`).
   - `400 Bad Request` — validación fallida (`fieldErrors` con detalle por campo).
-- **Verificación de email (Fase 1.1)**: el usuario creado queda con `emailVerified:
-  false` (ver `GET /api/users/me` en §2) y el backend emite internamente un token de
-  verificación de un solo uso, válido por 24hs. **Esta fase NO envía el email
-  real** (queda para una fase posterior) — el registro y el login **no se bloquean**
-  por tener el email sin verificar, y el token no se expone en ningún response HTTP.
-  Ver `POST /api/auth/verify-email` más abajo y `FRONTEND_HANDOFF.md` para el estado
-  exacto de qué puede/no puede hacer el frontend con esto hoy.
+- **Verificación de email**: el usuario creado queda con `emailVerified: false` (ver
+  `GET /api/users/me` en §2), el backend emite internamente un token de verificación de
+  un solo uso (válido por 24hs) y **dispara automáticamente un email real de
+  verificación** (Resend, ver `BACKEND_ARCHITECTURE.md` § Email) con un link a
+  `{APP_FRONTEND_URL}/verify-email?token=...`. El registro y el login **no se bloquean**
+  por tener el email sin verificar. Si el envío del email falla (proveedor caído), el
+  registro **igual se completa** — no se pierde la cuenta por eso (ver
+  "Resiliencia ante fallos de Resend" en `POST /api/auth/verify-email` más abajo). El
+  token nunca se expone en ningún response HTTP ni se loguea en texto plano.
 
 ### `POST /api/auth/login`
 
@@ -153,7 +155,7 @@ Verifica el email de una cuenta a partir del token emitido en el registro. Endpo
 - **Auth**: no requerida.
 - **Body** (`VerifyEmailRequest`):
   ```json
-  { "token": "el valor recibido (hoy solo vía log del servidor, ver nota abajo)" }
+  { "token": "el valor recibido por link en el email de verificación" }
   ```
   - `token`: obligatorio (`@NotBlank`).
 - **Response 200** (`EmailVerificationResponse`):
@@ -168,17 +170,60 @@ Verifica el email de una cuenta a partir del token emitido en el registro. Endpo
     ejemplo, por otro token válido emitido antes) y se presenta un segundo token todavía
     válido y sin usar, la respuesta sigue siendo `200` (el token se consume igual) y
     `emailVerifiedAt` **no se pisa** — conserva la fecha de la primera verificación real.
+    El email de bienvenida (ver abajo) tampoco se reenvía en este caso.
+  - Un token **invalidado** (superado por un `resend-verification` posterior, ver abajo)
+    se rechaza aunque no haya expirado ni se haya usado nunca.
 - **Errores**:
   - `400 Bad Request` — token inexistente/inválido (`"Invalid verification token"`), o
     body vacío/`blank` (`fieldErrors.token`).
   - `400 Bad Request` — token válido pero expirado (`"Verification token has expired"`).
+  - `400 Bad Request` — token invalidado por un reenvío posterior (`"Verification token
+    is no longer valid; a newer one may have been requested"`).
   - `409 Conflict` — token válido pero ya usado antes (`"Verification token has already
     been used"`) — este es el caso de "reintentar el mismo link dos veces".
-- **Qué NO hace todavía (fuera de alcance de esta fase)**: no hay envío real de email
-  (SMTP/proveedor externo), no hay endpoint de reenvío (`resend verification`), y no hay
-  ninguna restricción en el resto de la API por tener `emailVerified: false`. Ver
-  `FRONTEND_HANDOFF.md` para el detalle de cómo obtener un token para probar este flujo
-  mientras el envío real no existe.
+- **Email de bienvenida**: la primera vez que un usuario verifica exitosamente (no en
+  reintentos idempotentes), el backend dispara un email de bienvenida real vía Resend.
+  Mismo comportamiento de resiliencia que el de verificación: si falla, no revierte la
+  verificación (ver "Resiliencia ante fallos de Resend" abajo).
+- **Resiliencia ante fallos de Resend**: tanto el email de verificación (en `register` y
+  en `resend-verification`) como el de bienvenida (acá) se intentan enviar de forma
+  "best effort" — si Resend falla o no está configurado (`RESEND_API_KEY` vacío, default
+  en dev/test), el backend **nunca** revierte ni bloquea la operación de negocio que
+  disparó el envío (el registro sigue creando la cuenta, la verificación sigue marcando
+  `emailVerified: true`). El fallo solo queda logueado server-side. Ver
+  `BACKEND_ARCHITECTURE.md` § Email para el detalle de la abstracción.
+
+### `POST /api/auth/resend-verification`
+
+Reenvía el email de verificación para una cuenta que todavía no verificó su email.
+Endpoint **público** (sin JWT) — a propósito, para que un usuario que no puede loguearse
+con comodidad igual pueda pedir un nuevo link.
+
+- **Auth**: no requerida.
+- **Body** (`ResendVerificationRequest`):
+  ```json
+  { "email": "persona@example.com" }
+  ```
+  - `email`: obligatorio, formato email válido.
+- **Response 200** (`ResendVerificationResponse`), **siempre**, sin importar el caso real:
+  ```json
+  { "message": "If an account with that email needs verification, we've sent a new email." }
+  ```
+- **Prevención de account enumeration**: la respuesta `200` con el mismo mensaje
+  genérico se devuelve tanto si el email no existe, como si existe pero ya está
+  verificado, como si está dentro del cooldown anti-abuso (ver abajo), como si el envío
+  fue exitoso. El frontend **no puede** distinguir estos casos a partir de la respuesta
+  HTTP — no hay ningún código de error para "email no encontrado" en este endpoint.
+- **Qué hace internamente cuando el email existe y no está verificado ni en cooldown**:
+  invalida (no borra) cualquier token de verificación pendiente anterior del usuario
+  (`invalidated_at`) y emite uno nuevo, con un nuevo email de verificación.
+- **Antiabuso**: cooldown de 60 segundos por usuario, basado en el `created_at` del
+  último token emitido (no hay estado en memoria ni Redis). Un reenvío pedido dentro del
+  cooldown es un no-op silencioso (misma respuesta genérica `200`, no se emite token
+  nuevo ni se manda email).
+- **Errores**: `400 Bad Request` — validación fallida (`fieldErrors.email`) si el body
+  no trae un email con formato válido. No hay otros códigos de error posibles (ver
+  prevención de account enumeration arriba).
 
 ---
 
