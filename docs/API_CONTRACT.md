@@ -225,6 +225,86 @@ con comodidad igual pueda pedir un nuevo link.
   no trae un email con formato válido. No hay otros códigos de error posibles (ver
   prevención de account enumeration arriba).
 
+### `POST /api/auth/forgot-password` (Fase 1.3)
+
+Solicita la recuperación de contraseña de una cuenta. Endpoint **público** (sin JWT).
+No requiere que el email esté verificado — perder acceso a la cuenta no depende de ese
+estado.
+
+- **Auth**: no requerida.
+- **Body** (`ForgotPasswordRequest`):
+  ```json
+  { "email": "persona@example.com" }
+  ```
+  - `email`: obligatorio, formato email válido.
+- **Response 200** (`ForgotPasswordResponse`), **siempre**, sin importar el caso real:
+  ```json
+  { "message": "If an account with that email exists, we've sent password reset instructions." }
+  ```
+- **Prevención de account enumeration**: la respuesta `200` con el mismo mensaje
+  genérico se devuelve tanto si el email no existe, como si está dentro del cooldown
+  anti-abuso (ver abajo), como si el envío fue exitoso. El frontend **no puede**
+  distinguir estos casos a partir de la respuesta HTTP — no hay ningún código de error
+  para "email no encontrado" en este endpoint. A diferencia de `resend-verification`,
+  acá no importa si el email ya está verificado o no.
+- **Qué hace internamente cuando el email existe y no está en cooldown**: invalida (no
+  borra) cualquier `PasswordResetToken` pendiente anterior del usuario
+  (`invalidated_at`) y emite uno nuevo — mismo patrón que `resend-verification` pero
+  sobre una tabla independiente (`password_reset_tokens`, ver
+  `BACKEND_ARCHITECTURE.md`). El email se envía con un link a
+  `{APP_FRONTEND_URL}/reset-password?token=...`. El token vence a los **30 minutos**.
+- **Antiabuso**: cooldown de 60 segundos por usuario, mismo mecanismo que
+  `resend-verification` (basado en `created_at` del último token, sin Redis). Un pedido
+  dentro del cooldown es un no-op silencioso (misma respuesta genérica `200`).
+- **Resiliencia ante fallos de Resend**: si el envío falla o `RESEND_API_KEY` no está
+  configurada, la respuesta HTTP sigue siendo la misma genérica `200` — el fallo solo
+  queda logueado server-side, nunca se filtra al cliente.
+- **Errores**: `400 Bad Request` — validación fallida (`fieldErrors.email`). No hay
+  otros códigos de error posibles (ver prevención de account enumeration arriba).
+
+### `POST /api/auth/reset-password` (Fase 1.3)
+
+Aplica el cambio de contraseña a partir del token recibido por email en
+`forgot-password`. Endpoint **público** (sin JWT) — el token en sí es la credencial.
+
+- **Auth**: no requerida.
+- **Body** (`ResetPasswordRequest`):
+  ```json
+  { "token": "el valor recibido por link en el email de recuperación", "newPassword": "al menos 8 caracteres" }
+  ```
+  - `token`: obligatorio (`@NotBlank`).
+  - `newPassword`: obligatorio, mínimo 8 caracteres — **misma política que
+    `RegisterRequest.password`**, no hay una segunda regla distinta.
+- **Response 200** (`ResetPasswordResponse`):
+  ```json
+  { "message": "Your password has been reset successfully." }
+  ```
+  No devuelve un JWT nuevo — el frontend debe redirigir a login después de un reset
+  exitoso, no asume que el usuario queda autenticado.
+- **Reglas**:
+  - El token es de **un solo uso**: una vez usado exitosamente, no puede volver a
+    usarse.
+  - Expira a los **30 minutos** de emitido.
+  - Un token **invalidado** (superado por un `forgot-password` posterior) se rechaza
+    aunque no haya expirado ni se haya usado nunca.
+- **Errores**:
+  - `400 Bad Request` — token inexistente/inválido (`"Invalid password reset token"`),
+    body inválido (`fieldErrors.token` / `fieldErrors.newPassword`), token expirado
+    (`"Password reset token has expired"`), o token invalidado por un pedido posterior
+    (`"Password reset token is no longer valid; a newer one may have been requested"`).
+  - `409 Conflict` — token válido pero ya usado antes (`"Password reset token has
+    already been used"`).
+- **Email de confirmación**: tras un reset exitoso se dispara automáticamente un email
+  informativo ("tu contraseña fue cambiada"), sin contraseña ni token en el contenido.
+  Si ese envío falla, **no revierte** el cambio de contraseña ya aplicado (mismo
+  patrón "best effort" que el resto de los emails de esta fase).
+- **Limitación conocida — JWT preexistentes**: un JWT emitido **antes** del reset sigue
+  siendo válido hasta su expiración natural (`JWT_EXPIRATION_MS`). Fase 1.3 no
+  implementa revocación/versionado de tokens ni sesiones — eso queda para
+  **Fase 1.5 — Session Security**. En la práctica, un atacante con un JWT robado
+  emitido antes del reset conserva acceso hasta que ese JWT expire por sí solo, aunque
+  la contraseña ya haya sido cambiada.
+
 ---
 
 ## 2. Users (`/api/users`) — requiere autenticación

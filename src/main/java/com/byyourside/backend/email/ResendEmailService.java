@@ -48,6 +48,35 @@ public class ResendEmailService implements EmailService {
         send(toEmail, subject, html);
     }
 
+    @Override
+    public void sendPasswordResetEmail(String toEmail, String displayName, String resetUrl) {
+        String subject = "Recuperá tu contraseña de ByYourSide";
+        String html = """
+                <p>%s</p>
+                <p>Recibimos una solicitud para restablecer la contraseña de tu cuenta.
+                Si fuiste vos, hacé clic en el siguiente enlace:</p>
+                <p><a href="%s">Restablecer mi contraseña</a></p>
+                <p>Este enlace vence en 30 minutos.</p>
+                <p>Si vos no pediste este cambio, podés ignorar este correo -- tu
+                contraseña actual sigue funcionando sin cambios.</p>
+                """.formatted(greeting(displayName), resetUrl);
+
+        send(toEmail, subject, html);
+    }
+
+    @Override
+    public void sendPasswordChangedEmail(String toEmail, String displayName) {
+        String subject = "Tu contraseña de ByYourSide fue cambiada";
+        String html = """
+                <p>%s</p>
+                <p>Tu contraseña se cambió correctamente. Si vos hiciste este cambio, no
+                necesitás hacer nada más.</p>
+                <p>Si vos NO pediste este cambio, contactanos lo antes posible.</p>
+                """.formatted(greeting(displayName));
+
+        send(toEmail, subject, html);
+    }
+
     private void send(String toEmail, String subject, String html) {
         if (apiKey == null || apiKey.isBlank()) {
             // Sin RESEND_API_KEY configurada (default en dev/test, igual que

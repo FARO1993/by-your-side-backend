@@ -2,10 +2,14 @@ package com.byyourside.backend.auth;
 
 import com.byyourside.backend.auth.dto.AuthResponse;
 import com.byyourside.backend.auth.dto.EmailVerificationResponse;
+import com.byyourside.backend.auth.dto.ForgotPasswordRequest;
+import com.byyourside.backend.auth.dto.ForgotPasswordResponse;
 import com.byyourside.backend.auth.dto.LoginRequest;
 import com.byyourside.backend.auth.dto.RegisterRequest;
 import com.byyourside.backend.auth.dto.ResendVerificationRequest;
 import com.byyourside.backend.auth.dto.ResendVerificationResponse;
+import com.byyourside.backend.auth.dto.ResetPasswordRequest;
+import com.byyourside.backend.auth.dto.ResetPasswordResponse;
 import com.byyourside.backend.auth.dto.VerifyEmailRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +27,7 @@ public class AuthController {
 
     private final AuthService authService;
     private final EmailVerificationService emailVerificationService;
+    private final PasswordResetService passwordResetService;
 
     @PostMapping("/register")
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
@@ -47,5 +52,17 @@ public class AuthController {
         emailVerificationService.resendVerification(request.email());
         return ResponseEntity.ok(new ResendVerificationResponse(
                 "If an account with that email needs verification, we've sent a new email."));
+    }
+
+    // Respuesta siempre generica a proposito -- no distingue email inexistente
+    // de rate-limited (ver PasswordResetService).
+    @PostMapping("/forgot-password")
+    public ResponseEntity<ForgotPasswordResponse> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
+        return ResponseEntity.ok(passwordResetService.forgotPassword(request.email()));
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<ResetPasswordResponse> resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
+        return ResponseEntity.ok(passwordResetService.resetPassword(request.token(), request.newPassword()));
     }
 }

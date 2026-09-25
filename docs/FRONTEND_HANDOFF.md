@@ -101,6 +101,47 @@ construir:
 - **Fuera de alcance de esta fase** (no implementar todavía): forgot/reset password,
   cambio de contraseña, refresh tokens.
 
+## Recuperación de contraseña (Fase 1.3)
+
+Flujo completo: `forgot-password` → email con link → `reset-password`. Ambos
+endpoints son públicos (sin JWT).
+
+- **Pantalla "olvidé mi contraseña"**: formulario con un campo `email`, llama a
+  `POST /api/auth/forgot-password` con `{ "email": "..." }`. La respuesta es
+  **siempre** `200` con el mismo mensaje genérico, sin importar si el email existe o
+  no — **no mostrar ningún mensaje de error específico de "email no encontrado"**, ni
+  siquiera si el backend está en cooldown (60s desde el último pedido). Mostrar
+  simplemente el mensaje que devuelve la API o un texto equivalente ("si existe una
+  cuenta con ese email, te enviamos instrucciones").
+- **Ruta de reset**: el email manda un link a
+  `{APP_FRONTEND_URL}/reset-password?token=...`. El frontend necesita una ruta
+  `/reset-password` que lea `token` de la query string y un formulario con
+  `newPassword` (+ confirmación, solo del lado del frontend — el backend no pide
+  confirmación de contraseña). Llama a `POST /api/auth/reset-password` con
+  `{ "token": "...", "newPassword": "..." }`.
+- **Política de contraseña**: `newPassword` usa la misma regla que el registro (mínimo
+  8 caracteres) — reusar la misma validación de formulario que ya existe para
+  `RegisterRequest.password`, no inventar una nueva.
+- **Después de un reset exitoso**: la API responde `200` con un mensaje, **no** un JWT
+  nuevo. El frontend debe redirigir a la pantalla de login (no asumir que el usuario
+  queda autenticado) y mostrar un mensaje de éxito.
+- **Errores a manejar en la UI de reset** (ver `API_CONTRACT.md` § `reset-password`):
+  token inválido/inexistente, expirado (30 minutos de validez), ya usado (`409`), o
+  invalidado por un pedido de `forgot-password` más nuevo — en los tres últimos casos
+  es razonable mostrar "este link ya no es válido, pedí uno nuevo" con un link de
+  vuelta a "olvidé mi contraseña", sin necesidad de distinguir el motivo exacto en la
+  UI.
+- **Email de confirmación**: tras un reset exitoso el backend manda automáticamente un
+  email informativo ("tu contraseña fue cambiada"). No hay nada que construir en el
+  frontend para esto.
+- **Limitación conocida a comunicar si corresponde**: un JWT emitido antes del reset
+  sigue siendo válido hasta su expiración natural (24hs). No hay revocación de
+  sesiones todavía (llega en una fase posterior) — no es necesario que el frontend
+  haga nada especial por esto, es una limitación de backend documentada.
+- **Fuera de alcance de esta fase** (no implementar todavía): cambio de contraseña
+  autenticado (desde el perfil, con la contraseña actual), refresh tokens, logout
+  global / revocación de sesiones.
+
 ## Endpoints disponibles
 
 Ver `API_CONTRACT.md` para el detalle completo (request/response/reglas/errores).
@@ -108,7 +149,7 @@ Resumen de superficie por dominio:
 
 | Dominio | Base path | Notas rápidas |
 |---|---|---|
-| Auth | `/api/auth` | público, register/login/verify-email |
+| Auth | `/api/auth` | público, register/login/verify-email/forgot-password/reset-password |
 | Users | `/api/users` | perfil propio/ajeno, discover, avatar |
 | Posts | `/api/posts` | CRUD + feed + apoyo ("like") |
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |
