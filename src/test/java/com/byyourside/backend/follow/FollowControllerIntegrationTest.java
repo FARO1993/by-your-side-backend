@@ -1,5 +1,6 @@
 package com.byyourside.backend.follow;
 
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.notification.NotificationRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -49,6 +50,9 @@ class FollowControllerIntegrationTest {
     @Autowired
     private NotificationRepository notificationRepository;
 
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
     private User facu;
     private User soumia;
     private String facuToken;
@@ -57,6 +61,7 @@ class FollowControllerIntegrationTest {
     void setUp() throws Exception {
         notificationRepository.deleteAll();
         followRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");

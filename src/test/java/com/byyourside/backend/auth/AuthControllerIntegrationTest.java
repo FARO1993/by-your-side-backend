@@ -31,8 +31,12 @@ class AuthControllerIntegrationTest {
     @Autowired
     private UserRepository userRepository;
 
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
     @BeforeEach
     void cleanUp() {
+        emailVerificationTokenRepository.deleteAll();
         userRepository.deleteAll();
     }
 

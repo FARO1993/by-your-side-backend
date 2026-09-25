@@ -146,7 +146,9 @@ public class UserService {
                 user.getBio(),
                 user.getAvatarUrl(),
                 user.getRole().name(),
-                user.getCreatedAt()
+                user.getCreatedAt(),
+                user.isEmailVerified(),
+                user.getEmailVerifiedAt()
         );
     }
 }

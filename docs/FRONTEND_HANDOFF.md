@@ -47,6 +47,53 @@ del backend (junto con `API_CONTRACT.md` / `WEBSOCKET_CONTRACT.md`).
 5. El mismo token JWT sirve para REST y para WebSocket (ver abajo) — no hay tokens
    separados por canal.
 
+### `email` vs `username` — importante, se confunde fácil
+
+```text
+email    = credencial visible de autenticación (lo que el usuario escribe para loguearse)
+username = handle interno/autogenerado (slug de displayName), usado internamente por
+           Spring Security, el JWT y el WebSocket — el usuario nunca lo eligió ni lo vio
+           como campo de formulario
+```
+
+`AuthResponse.username` (de `register`/`login`) es el **handle**, no el email. No
+mostrar ese valor como si fuera el email del usuario en ningún lado de la UI.
+
+## Verificación de email (Fase 1.1)
+
+Infraestructura backend lista; **el envío real del correo todavía no existe** (queda
+para una fase posterior). Esto es lo que el frontend puede construir ya mismo y lo que
+todavía no:
+
+- **Cómo saber si el usuario verificó su email**: `GET /api/users/me` ahora devuelve
+  `emailVerified: boolean` y `emailVerifiedAt: string | null`. Es el único lugar donde
+  se expone — no está en `PublicUserProfileResponse`, `DiscoverUserResponse` ni
+  `UserSummary` (es información privada de la propia cuenta, igual que `email`).
+- **Endpoint de verificación**: `POST /api/auth/verify-email`, público (sin JWT), body
+  `{ "token": "..." }`, responde `200` con
+  `{ "emailVerified": true, "emailVerifiedAt": "..." }` si el token es válido. Ver
+  `API_CONTRACT.md` §1 para los casos de error (`400` token inválido/expirado, `409`
+  token ya usado).
+- **Qué mantiene register**: sigue creando el usuario, devolviendo `token` (JWT) y
+  dejando al usuario autenticable de inmediato — **no cambia nada de lo que el frontend
+  ya hace hoy** con `POST /api/auth/register`.
+- **Qué mantiene login**: sin cambios. Un usuario con `emailVerified: false` puede
+  loguearse normalmente — **no hay ninguna restricción de acceso** por email no
+  verificado en esta fase (ni en login, ni en ningún otro endpoint).
+- **Cómo probar el flujo hoy, sin email real**: el backend genera el token al registrar
+  pero **no lo devuelve en ningún response HTTP** (es un secreto de un solo uso; exponerlo
+  por API anularía el propósito de "probar que el usuario recibió el correo" que tendrá
+  en la fase siguiente). Por ahora el token solo queda logueado server-side
+  (`log.info` en `EmailVerificationService`) — para QA/desarrollo, hay que mirar los
+  logs del backend después de registrar un usuario. **No hay banner ni bloqueo de UI
+  que implementar todavía** por email sin verificar; se puede mostrar opcionalmente un
+  indicador informativo ("verificá tu email") basado en `emailVerified`, sin más.
+- **Lo que falta para Fase 1.2** (no implementar todavía): envío real del email
+  (SMTP/proveedor externo), email de bienvenida, reenvío de verificación
+  (`resend verification`), y recién ahí tendría sentido construir la UI completa del
+  flujo (pantalla "revisá tu correo", link que abre `/verify-email?token=...` en el
+  frontend y éste llama al backend, etc.).
+
 ## Endpoints disponibles
 
 Ver `API_CONTRACT.md` para el detalle completo (request/response/reglas/errores).
@@ -54,7 +101,7 @@ Resumen de superficie por dominio:
 
 | Dominio | Base path | Notas rápidas |
 |---|---|---|
-| Auth | `/api/auth` | público, register/login |
+| Auth | `/api/auth` | público, register/login/verify-email |
 | Users | `/api/users` | perfil propio/ajeno, discover, avatar |
 | Posts | `/api/posts` | CRUD + feed + apoyo ("like") |
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |

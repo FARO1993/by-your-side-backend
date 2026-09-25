@@ -1,5 +1,6 @@
 package com.byyourside.backend.availability;
 
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.chat.ConversationRepository;
 import com.byyourside.backend.chat.MessageRepository;
 import com.byyourside.backend.user.User;
@@ -56,6 +57,9 @@ class AvailabilityControllerIntegrationTest {
     @Autowired
     private ConversationRepository conversationRepository;
 
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
     private User facu;
     private String facuToken;
     private User soumia;
@@ -66,6 +70,7 @@ class AvailabilityControllerIntegrationTest {
         messageRepository.deleteAll();
         conversationRepository.deleteAll();
         availabilityRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");

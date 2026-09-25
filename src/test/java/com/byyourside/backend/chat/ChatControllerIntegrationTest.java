@@ -1,5 +1,6 @@
 package com.byyourside.backend.chat;
 
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.user.User;
@@ -48,6 +49,9 @@ class ChatControllerIntegrationTest {
     private ConversationRepository conversationRepository;
 
     @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @Autowired
@@ -65,6 +69,7 @@ class ChatControllerIntegrationTest {
         messageRepository.deleteAll();
         conversationRepository.deleteAll();
         followRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");
