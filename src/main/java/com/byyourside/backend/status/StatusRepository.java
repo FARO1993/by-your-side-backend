@@ -20,6 +20,12 @@ public interface StatusRepository extends JpaRepository<Status, UUID> {
     // contener a alguien bloqueado, porque BlockService.blockUser limpia
     // `follows` en ambas direcciones, pero el filtro explicito en la query
     // no depende de esa invariante para seguir siendo correcto).
+    // Fase 9.5: NOT EXISTS de UserMute, UNILATERAL (solo :currentUserId
+    // como muter) -- status/presence agregado es una superficie de
+    // descubrimiento igual que el feed de posts, asi que aplica el mismo
+    // criterio de "afecta lo agregado, no el acceso directo" (no existe una
+    // ruta de acceso directo a un status individual ajeno hoy, pero
+    // react()/removeReaction() siguen sin chequear mute, ver StatusService).
     @Query("""
             SELECT s FROM Status s
             JOIN FETCH s.user
@@ -29,6 +35,10 @@ public interface StatusRepository extends JpaRepository<Status, UUID> {
                 SELECT 1 FROM UserBlock b
                 WHERE (b.blocker.id = :currentUserId AND b.blocked.id = s.user.id)
                 OR (b.blocker.id = s.user.id AND b.blocked.id = :currentUserId)
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM UserMute m
+                WHERE m.muter.id = :currentUserId AND m.muted.id = s.user.id
             )
             ORDER BY s.user.id, s.createdAt DESC
             """)

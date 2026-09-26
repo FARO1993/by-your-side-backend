@@ -1,6 +1,7 @@
 package com.byyourside.backend.user;
 
 import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
@@ -48,6 +49,9 @@ class UserControllerIntegrationTest {
     private UserBlockRepository userBlockRepository;
 
     @Autowired
+    private UserMuteRepository userMuteRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -74,6 +78,7 @@ class UserControllerIntegrationTest {
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
         userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();     // ← ahora sí, sin FKs pendientes
 
         String registerBody = """

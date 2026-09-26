@@ -8,6 +8,7 @@ import com.byyourside.backend.availability.CompanionIntent;
 import com.byyourside.backend.chat.ConversationRepository;
 import com.byyourside.backend.chat.MessageRepository;
 import com.byyourside.backend.comment.CommentRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequest;
@@ -70,6 +71,9 @@ class BlockIntegrationTest {
 
     @Autowired
     private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private UserMuteRepository userMuteRepository;
 
     @Autowired
     private AuthSessionRepository authSessionRepository;
@@ -144,6 +148,7 @@ class BlockIntegrationTest {
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
         userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");

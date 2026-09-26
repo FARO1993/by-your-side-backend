@@ -1,6 +1,7 @@
 package com.byyourside.backend.user;
 
 import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.follow.Follow;
@@ -47,6 +48,9 @@ class ProfilePrivacyIntegrationTest {
     private UserBlockRepository userBlockRepository;
 
     @Autowired
+    private UserMuteRepository userMuteRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -81,6 +85,7 @@ class ProfilePrivacyIntegrationTest {
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
         userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();
 
         mainUser = registerUser("facu", "facu@example.com", ProfileVisibility.PUBLIC);

@@ -28,6 +28,14 @@ import java.util.UUID;
 // proposito NUNCA se expone si el TARGET me bloqueo a mi (eso simplemente
 // resulta en un 404 "User not found" -- ver UserService.getPublicProfile --
 // indistinguible de un usuario inexistente, para no revelar la relacion).
+//
+// `mutedByCurrentUser` (Fase 9.5): true si YO silencie a este usuario.
+// A diferencia de `blockedByCurrentUser`, mutear NUNCA afecta el resto de
+// esta respuesta (bio, followState, etc. viajan exactamente igual que si no
+// hubiera mute -- mute no es control de acceso, ver MuteService) y, al ser
+// unilateral e invisible por diseño, NUNCA existe un campo equivalente para
+// el sentido contrario ("este usuario me muteo a mi") en ninguna respuesta
+// de la API.
 public record PublicUserProfileResponse(
         UUID id,
         String username,
@@ -40,6 +48,7 @@ public record PublicUserProfileResponse(
         boolean followedByCurrentUser,
         String profileVisibility,
         String followState,
-        boolean blockedByCurrentUser
+        boolean blockedByCurrentUser,
+        boolean mutedByCurrentUser
 ) {
 }

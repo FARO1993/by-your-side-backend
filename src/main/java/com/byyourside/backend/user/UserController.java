@@ -2,6 +2,8 @@ package com.byyourside.backend.user;
 
 import com.byyourside.backend.block.BlockService;
 import com.byyourside.backend.block.dto.BlockedUserResponse;
+import com.byyourside.backend.mute.MuteService;
+import com.byyourside.backend.mute.dto.MutedUserResponse;
 import com.byyourside.backend.post.PostService;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.security.UserPrincipal;
@@ -30,6 +32,7 @@ public class UserController {
     private final UserService userService;
     private final PostService postService;
     private final BlockService blockService;
+    private final MuteService muteService;
 
     @GetMapping("/me")
     public ResponseEntity<UserResponse> getCurrentUser(@AuthenticationPrincipal UserPrincipal principal) {
@@ -93,5 +96,29 @@ public class UserController {
                                                                       @RequestParam(defaultValue = "20") int size) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(blockService.getBlockedUsers(principal.getId(), pageable));
+    }
+
+    // El muter es SIEMPRE el usuario autenticado -- nunca se acepta un
+    // muterId por body/path distinto al principal (Fase 9.5).
+    @PostMapping("/{userId}/mute")
+    public ResponseEntity<Void> muteUser(@AuthenticationPrincipal UserPrincipal principal,
+                                         @PathVariable UUID userId) {
+        muteService.muteUser(principal.getId(), userId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/{userId}/mute")
+    public ResponseEntity<Void> unmuteUser(@AuthenticationPrincipal UserPrincipal principal,
+                                           @PathVariable UUID userId) {
+        muteService.unmuteUser(principal.getId(), userId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/me/muted")
+    public ResponseEntity<Page<MutedUserResponse>> getMutedUsers(@AuthenticationPrincipal UserPrincipal principal,
+                                                                  @RequestParam(defaultValue = "0") int page,
+                                                                  @RequestParam(defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return ResponseEntity.ok(muteService.getMutedUsers(principal.getId(), pageable));
     }
 }

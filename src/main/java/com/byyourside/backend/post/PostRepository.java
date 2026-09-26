@@ -33,6 +33,13 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     // consigna de esta fase pide el filtro explicito en la query del feed
     // (no solo depender de esa invariante transitiva) para no depender
     // silenciosamente de que esa limpieza nunca tenga un bug.
+    // Fase 9.5: el NOT EXISTS de UserMute es UNILATERAL (solo
+    // :currentUserId como muter) -- a diferencia del de UserBlock, este no
+    // tiene contraparte transitiva: mutear no toca `follows`, asi que este
+    // es el UNICO lugar donde esa exclusion ocurre para el feed. El autor
+    // sigue siendo un follower efectivo (isFollower, etc. sin cambios) --
+    // mute nunca afecta el acceso directo a su perfil/posts, solo lo saca
+    // de esta query agregada.
     @Query("""
             SELECT p FROM Post p
             JOIN FETCH p.author a
@@ -46,6 +53,10 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
                 SELECT 1 FROM UserBlock b
                 WHERE (b.blocker.id = :currentUserId AND b.blocked.id = a.id)
                 OR (b.blocker.id = a.id AND b.blocked.id = :currentUserId)
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM UserMute m
+                WHERE m.muter.id = :currentUserId AND m.muted.id = a.id
             )
             ORDER BY p.createdAt DESC
             """)

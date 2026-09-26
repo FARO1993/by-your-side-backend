@@ -541,7 +541,8 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
     "followedByCurrentUser": false,
     "profileVisibility": "PUBLIC",
     "followState": "NONE",
-    "blockedByCurrentUser": false
+    "blockedByCurrentUser": false,
+    "mutedByCurrentUser": false
   }
   ```
   **Cambio de contrato (Fase 9.3)**: `followState` es un campo nuevo (adición pura al
@@ -554,6 +555,12 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
   pura al final) — `true` únicamente si **vos** bloqueaste a `userId`. **Nunca** existe
   un campo equivalente para el sentido contrario (si `userId` te bloqueó a vos) — ver
   el punto de bloqueo más abajo, ese caso ni siquiera llega a devolver `200`.
+  **Cambio de contrato (Fase 9.5)**: `mutedByCurrentUser` es un campo nuevo (adición pura
+  al final) — `true` únicamente si **vos** silenciaste a `userId`. A diferencia de
+  `blockedByCurrentUser`, este campo **nunca** afecta el resto de la respuesta (silenciar
+  no es control de acceso, ver § 13) y, por ser unilateral e invisible por diseño,
+  **tampoco existe** un campo equivalente para el sentido contrario en ningún endpoint de
+  la API.
 - **Errores**: `404 Not Found` si `userId` no existe, **o si `userId` te bloqueó a vos**
   (Fase 9.4 — ver más abajo, indistinguible a propósito del primer caso).
 - **Perfil `PRIVATE` — vista limitada, nunca 404** (Fase 9.1, semántica de acceso
@@ -607,6 +614,11 @@ Posts de un usuario, respetando visibilidad según la relación con quien pregun
     cualquier dirección), **lista vacía** (`200 OK`, `content: []`) sin importar
     `profileVisibility` — mismo tratamiento "sin contenido" que un perfil `PRIVATE` sin
     acceso, nunca `404` (no confirma ni niega el bloqueo vía status code).
+  - **Mute (Fase 9.5) — a propósito SIN efecto acá**: silenciar a `userId` **no** oculta
+    nada en esta ruta. Entrar explícitamente al perfil de alguien y pedir sus posts es
+    acceso directo, no una superficie agregada — mute solo saca contenido del feed
+    (ver § Posts) y de discover (ver más abajo), nunca de un acceso directo. Aplican las
+    mismas reglas de visibilidad de arriba exactamente igual que si no hubiera mute.
 - **Response 200**: `Page<PostResponse>` (ver forma de `PostResponse` en § Posts).
 - **Errores**: `404 Not Found` si `userId` no existe (esto sí es 404 real — el usuario en
   sí no existe, no es un tema de privacidad).
@@ -630,6 +642,10 @@ fuera de alcance de esta fase) — un usuario `PRIVATE` puede aparecer en el lis
   **Bloqueo (Fase 9.4)**: excluye bilateralmente a quien el autenticado bloqueó **y** a
   quien lo bloqueó a él (2 consultas batch sobre toda la página, no una por fila) —
   ninguna de las dos direcciones aparece nunca en este listado.
+  **Mute (Fase 9.5)**: excluye, además, a quien el autenticado silenció — **solo esa
+  dirección** (1 consulta batch más). A diferencia del bloqueo, no hay exclusión
+  recíproca: que alguien te haya silenciado a vos no te saca de **su** discover ni del
+  de nadie más, porque mute nunca filtra desde la perspectiva del muted.
 
 ### `POST /api/users/me/avatar`
 Sube un avatar a Cloudinary y actualiza el perfil propio.
@@ -691,6 +707,13 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
   (`NOT EXISTS` sobre bloqueos, no post-filtrado en memoria) — en la práctica esto ya es
   redundante con la limpieza de `follows` que ocurre al bloquear (ver §12), pero se
   mantiene como defensa en profundidad explícita en la query.
+- **Mute (Fase 9.5)**: excluye, además, los posts de cualquier autor que el autenticado
+  haya silenciado — **unilateral**, filtrado directo en la misma query (`NOT EXISTS`
+  sobre `UserMute`, no post-filtrado en memoria). A diferencia del bloqueo, esto **no**
+  es redundante con ninguna otra limpieza — silenciar no borra ni modifica `follows`, así
+  que este es el único mecanismo que saca esos posts del feed. El autor sigue siendo un
+  follower efectivo en todo lo demás (seguís pudiendo entrar a su perfil/posts
+  directamente, ver § 2).
 
 ### `GET /api/posts/{postId}`
 - **Response 200**: `PostResponse`.
@@ -705,6 +728,10 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
   cualquier dirección), `404 Not Found` — sin importar `visibility` del post, incluso si
   es `PUBLIC` (ver `ProfileAccessPolicy` en `BACKEND_ARCHITECTURE.md`, el bloqueo se
   chequea antes de mirar la visibilidad del post individual).
+  **Mute (Fase 9.5) — a propósito SIN efecto acá**: silenciar al autor no cambia nada en
+  esta ruta. `PostAccessPolicy.canView` no chequea mute en absoluto — este endpoint es
+  acceso directo (el frontend entra desde un link, notificación o el perfil del autor),
+  no una superficie agregada.
 
 ### `PATCH /api/posts/{postId}`
 Solo el autor puede editar. Campos opcionales (solo se aplican los no-null).
@@ -727,7 +754,8 @@ Da "apoyo" (equivalente a un like) al post. Dispara notificación `NEW_SUPPORT` 
   existe, o si existe pero no es visible para quien pregunta (mismo criterio de
   visibilidad que `GET /api/posts/{postId}`, incluyendo perfil `PRIVATE` del autor,
   Fase 9.1, **y bloqueo bilateral, Fase 9.4**) — no se puede apoyar un post que no se
-  podría ver.
+  podría ver. **Mute (Fase 9.5) no afecta esta ruta** — silenciar al autor no impide
+  apoyar su post, mismo criterio que comentar (ver § 4).
 
 ### `DELETE /api/posts/{postId}/support`
 Quita el apoyo previamente dado.
@@ -756,7 +784,9 @@ Dispara notificación `NEW_COMMENT` al autor del post (salvo auto-comentario).
 - **Errores**: `404 Not Found` si el post no existe, o si existe pero no es visible para
   quien pregunta (Fase 9.1: mismo criterio de visibilidad que `GET
   /api/posts/{postId}`, incluyendo perfil `PRIVATE` del autor y bloqueo bilateral, Fase
-  9.4) — no se puede comentar un post que no se podría ver.
+  9.4) — no se puede comentar un post que no se podría ver. **Mute (Fase 9.5) no afecta
+  esta ruta**: `CommentService` delega en `PostAccessPolicy.canView`, que nunca chequea
+  mute — silenciar a alguien no impide comentar en sus posts ni que comente en los tuyos.
 
 ### `GET /api/posts/{postId}/comments`
 **No pagina** — devuelve `List<CommentResponse>` completa, orden `createdAt ASC` (más
@@ -942,6 +972,10 @@ vencido) por cada usuario que sigo + el propio, orden `createdAt DESC`.
 - **Bloqueo (Fase 9.4)**: excluye bilateralmente, filtrado en la query (mismo criterio
   de defensa en profundidad que el feed de posts — en la práctica ya es redundante con
   la limpieza de `follows` al bloquear, ver §12).
+- **Mute (Fase 9.5)**: excluye, además, el status de cualquier usuario que el autenticado
+  haya silenciado — **unilateral**, filtrado directo en la query (`NOT EXISTS`, mismo
+  criterio que el feed de posts, ver §3). Igual que con posts, esto no es redundante con
+  ninguna limpieza (mute no toca `follows`).
 
 ### `POST /api/statuses/{statusId}/react`
 Reacciona a un status. Si ya habías reaccionado, **reemplaza** el tipo de reacción
@@ -955,6 +989,8 @@ ese status (cambiar el tipo de una reacción existente no vuelve a notificar).
   genérico que un status inexistente. Este endpoint es una interacción directa
   usuario-a-usuario que no pasa por `PostAccessPolicy` (los estados son un dominio
   separado de los posts), así que necesitó su propio chequeo de bloqueo explícito.
+  **Mute (Fase 9.5) no afecta esta ruta** — es interacción directa, no una superficie
+  agregada; podés seguir reaccionando al status de alguien que silenciaste (y viceversa).
 
 ### `DELETE /api/statuses/{statusId}/react`
 Quita tu reacción.
@@ -996,6 +1032,13 @@ Lista hasta 10 personas disponibles ahora mismo con ese `intent`, en **orden ale
 - **Bloqueo (Fase 9.4)**: excluye bilateralmente en la query nativa (`NOT EXISTS` sobre
   bloqueos) — ni quien el autenticado bloqueó ni quien lo bloqueó a él pueden aparecer,
   en ninguna dirección.
+- **Mute (Fase 9.5)**: excluye, además, a quien el autenticado silenció — **unilateral**
+  (`NOT EXISTS` sobre `user_mutes`, solo esa dirección). Si A silenció a B, B deja de
+  aparecer como sugerencia para A, pero A sigue apareciendo con total normalidad en el
+  listado de B. No borra la fila de `Availability` de nadie, solo la excluye de este
+  listado — si ya existe una conversación entre ambos, `POST
+  /api/conversations/{userId}` sigue funcionando igual (ver § 8), mute nunca impide
+  contactar directamente a alguien.
 
 **Relación con chat**: el modo compañía es la única forma de iniciar una conversación
 con alguien que no seguís ni te sigue — ver § 8 y reglas de `POST /api/conversations/{userId}`.
@@ -1081,6 +1124,12 @@ Envía un mensaje. Además de persistirlo, lo empuja por WebSocket al destinatar
   entrantes del cliente por WebSocket, así que este `POST` es el único punto de entrada
   para enviar un mensaje y el único lugar donde hace falta el chequeo de bloqueo. No hay
   forma de bypassear este gate por WS.
+- **Mute (Fase 9.5) — a propósito SIN ningún efecto en todo § 8**: silenciar a alguien no
+  impide crear/obtener la conversación, no oculta la conversación ni sus mensajes, no
+  bloquea el envío de mensajes nuevos en ninguna dirección. Ambos pueden seguir
+  chateando con total normalidad — mute nunca corta interacción directa, solo afecta
+  superficies agregadas de descubrimiento/contenido (feed, discover, status/presence,
+  disponibilidad — ver §§ 3, 2, 6, 7).
 
 ---
 
@@ -1097,6 +1146,12 @@ status reaction) — no hay endpoint para crearlas manualmente.
   en un solo lugar en vez de duplicada en cada caller. **No afecta notificaciones ya
   existentes** — bloquear a alguien nunca borra notificaciones históricas generadas
   antes del bloqueo, sólo evita que se generen nuevas.
+- **Mute (Fase 9.5) — decisión explícita, sin efecto**: silenciar a alguien **no**
+  suprime sus notificaciones. `NotificationService.notify()` no chequea mute en
+  absoluto — seguís recibiendo notificaciones de follow/comentario/apoyo/reacción de
+  quien silenciaste, exactamente igual que si no lo hubieras silenciado. Esto es
+  "notification preferences", una semántica distinta y explícitamente fuera de alcance
+  de esta fase (ver § 13) — no una omisión.
 
 ### `GET /api/notifications`
 - **Query params**: `page` (default `0`), `size` (default `20`).
@@ -1263,10 +1318,95 @@ existe ningún endpoint para consultar eso, ver más abajo).
 
 ### Fuera de alcance de esta fase (explícitamente no implementado)
 
-Silenciar sin bloquear ("mute"), ocultar un post puntual, ocultar a un usuario sin
-bloquearlo, reporte automático al bloquear, motivo de bloqueo, bloqueo temporizado,
-"amigos cercanos"/audiencias personalizadas/círculos, bloqueo por dispositivo, y
-cualquier mecanismo de anti-abuso/rate-limiting más allá de lo que ya existía.
+Ocultar un post puntual, ocultar a un usuario sin bloquearlo, reporte automático al
+bloquear, motivo de bloqueo, bloqueo temporizado, "amigos cercanos"/audiencias
+personalizadas/círculos, bloqueo por dispositivo, y cualquier mecanismo de
+anti-abuso/rate-limiting más allá de lo que ya existía. (Silenciar sin bloquear ("mute")
+dejó de estar en esta lista — ver § 13.)
+
+---
+
+## 13. User Muting (`/api/users/{userId}/mute`, `/api/users/me/muted`) — requiere autenticación
+
+Silenciar (mute) de usuario a usuario (Fase 9.5). A diferencia del bloqueo (§ 12,
+**bilateral** en efecto), esta relación es estrictamente **unilateral**: que A silencie a
+B **no implica nada** sobre si B silencia a A, y el efecto nunca se consulta
+bilateralmente en ningún lado del código. Mutear **no es control de acceso** — no
+modifica `Follow`/`FollowRequest`, no afecta `ProfileAccessPolicy` ni `PostAccessPolicy`,
+no bloquea chat ni ninguna interacción directa. Solo cambia lo que el **muter** ve en
+superficies agregadas de descubrimiento/contenido: feed (§ 3), discover (§ 2),
+status/presence agregada (§ 6), disponibilidad/companion (§ 7). El `muterId` **nunca** se
+acepta desde el body — siempre es el usuario del JWT, y `userId` en el path es siempre el
+**target**.
+
+**El usuario silenciado nunca se entera**: no existe ningún endpoint ni campo en toda la
+API para que un usuario averigüe si otro lo silenció, ni cuántos lo silenciaron.
+
+### `POST /api/users/{userId}/mute`
+Silencia a `userId`. **Idempotente** — silenciar a alguien ya silenciado no falla (`204`
+igual, sin crear una segunda fila).
+- **Response**: `204 No Content`.
+- **Errores**: `400 Bad Request` (intentar silenciarte a vos mismo), `404 Not Found`
+  (`userId` no existe).
+- **Sin efectos secundarios sobre otras relaciones** (a propósito, a diferencia de
+  `POST .../block`): no toca `Follow`, no toca `FollowRequest`, no toca `UserBlock`. Si
+  ya seguías a `userId`, seguís siguiéndolo después de silenciarlo — silenciar y seguir a
+  alguien no son mutuamente excluyentes en ningún orden.
+
+### `DELETE /api/users/{userId}/mute`
+Deja de silenciar a `userId`. Solo quien silenció puede dejar de silenciar (el
+path/principal son siempre el mismo `muterId`). **Idempotente** — dejar de silenciar a
+alguien no silenciado no falla (`204` igual).
+- **Response**: `204 No Content`.
+- **Decisión explícita — no hay nada que "restaurar"**: a diferencia de `DELETE
+  .../block`, acá no hace falta aclarar que no se recrea nada, porque silenciar nunca
+  eliminó ni modificó ninguna otra relación en primer lugar. El contenido de `userId`
+  vuelve a aparecer en feed/discover/status/disponibilidad exactamente según las reglas
+  normales de esas superficies (como si nunca hubiera existido el mute).
+
+### `GET /api/users/me/muted`
+Lista de usuarios que el **autenticado** silenció — **nunca** quién lo silenció a él (no
+existe ningún endpoint para consultar eso).
+- **Query params**: `page` (default `0`), `size` (default `20`).
+- **Response 200**: `Page<MutedUserResponse>`:
+  ```json
+  { "userId": "uuid", "username": "...", "displayName": "...", "avatarUrl": "...", "mutedAt": "..." }
+  ```
+  DTO mínimo a propósito — **nunca incluye `email`**, mismo criterio que
+  `BlockedUserResponse`/`UserSummary`.
+
+### Decisiones de diseño explícitas (para el frontend y para no repetir el debate)
+
+- **`mutedByCurrentUser` sí, `mutingCurrentUser` no**: mismo criterio que
+  `blockedByCurrentUser`/`blockingCurrentUser` en § 12 — `GET /api/users/{userId}` expone
+  si **vos** silenciaste al `userId` consultado, pero **jamás** si `userId` te silenció a
+  **vos**. A diferencia del bloqueo, acá no hay ni siquiera un 404 que insinúe la
+  relación inversa: el perfil de alguien que te silenció se ve exactamente igual que el
+  de cualquiera que no te silenció.
+- **Acceso directo intacto, siempre**: perfil (`GET /api/users/{userId}`), posts por
+  usuario (`GET /api/users/{userId}/posts`), post individual (`GET /api/posts/{postId}`),
+  comentarios, apoyo/reacciones y chat **no** chequean mute en ningún punto del código —
+  ver las notas "Mute (Fase 9.5) — a propósito SIN efecto acá" repartidas en §§ 2, 3, 4,
+  6, 8. La diferencia de fondo es "no quiero verlo en superficies que arma el sistema por
+  mí" vs. "no tengo acceso" — mute es lo primero, nunca lo segundo.
+- **Notifications, decisión explícita**: silenciar a alguien **no** silencia sus
+  notificaciones (ver § 9) — eso es "notification preferences", semántica distinta y
+  fuera de alcance de esta fase.
+- **Interacción con Block**: mutear y después bloquear al mismo usuario elimina el mute
+  propio hacia esa persona (queda redundante — el bloqueo ya oculta todo lo que ese mute
+  ocultaba, y más). El sentido inverso **no** se toca: si `userId` te había silenciado a
+  vos y ahora lo bloqueás, ese mute de `userId` hacia vos queda intacto — es una
+  preferencia suya, ajena a tu acción, y no debilita el bloqueo en absoluto (el filtrado
+  de `UserBlock` en feed/discover/status/disponibilidad no depende de ningún `UserMute`
+  para excluirte de lo que ve `userId`). Desbloquear **no** revive ningún mute borrado
+  por este mecanismo.
+
+### Fuera de alcance de esta fase (explícitamente no implementado)
+
+Ocultar un post puntual sin silenciar a su autor ("hide post"), silenciar una
+conversación puntual ("mute conversation"), silenciar notificaciones, mute temporizado,
+mute de temas/topics, "amigos cercanos"/audiencias personalizadas/círculos, preferencias
+de recomendación, anti-spam, reporte automático al silenciar.
 
 ---
 
