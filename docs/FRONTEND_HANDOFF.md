@@ -231,50 +231,91 @@ cuenta/seguridad. No confundir los dos flujos ni reusar la misma pantalla.
   próximo refresh falle — ya se sabe de antemano que el `refreshToken` guardado va a
   quedar inválido.
 
-## Privacidad de perfil y publicaciones (Fase 9.1/9.2)
+## Privacidad de perfil, publicaciones y follow requests (Fase 9.1/9.2/9.3)
 
-Dos controles independientes, con una regla de interacción importante entre ellos.
+Dos controles de privacidad, más un flujo de solicitudes que los conecta.
 
 - **Perfil** (`UserResponse`/`PublicUserProfileResponse`/`DiscoverUserResponse.profileVisibility`):
   enum `"PUBLIC" | "PRIVATE"` — **exactamente esos dos valores**, sin
   `"FOLLOWERS_ONLY"` a nivel de perfil (eso solo existe a nivel de post, ver abajo,
   cuidado con confundirlos). Default `PUBLIC` para cuentas nuevas y viejas.
 - **Publicación** (`PostResponse.visibility`, `CreatePostRequest`/`UpdatePostRequest.visibility`):
-  enum `"PUBLIC" | "FOLLOWERS_ONLY" | "PRIVATE"` — esto **ya existía** antes de esta
-  fase (no es nuevo), solo se documenta acá por completitud. Default `PUBLIC` si no se
-  manda `visibility` al crear.
+  enum `"PUBLIC" | "FOLLOWERS_ONLY" | "PRIVATE"` — esto **ya existía** antes de Fase 9.1
+  (no es nuevo), solo se documenta acá por completitud. Default `PUBLIC` si no se manda
+  `visibility` al crear.
 - **Cómo cambiar la privacidad del perfil**: `PATCH /api/users/me` con
   `{ "profileVisibility": "PRIVATE" }` (o `"PUBLIC"`). Mismo endpoint que ya se usa para
   editar `displayName`/`bio`/`avatarUrl` — no hay un endpoint separado. Un valor
   distinto de esos dos responde `400`.
-- **Regla de interacción — la más importante para la UI**: si el perfil de un autor es
-  `PRIVATE`, **ninguno de sus posts es visible para terceros**, sin importar el
-  `visibility` de cada post individual (ni siquiera los `PUBLIC`). Seguir a esa persona
-  **no cambia nada** — no hay solicitud de seguimiento pendiente en esta fase, el
-  follow sigue siendo inmediato, pero no desbloquea el contenido de un perfil privado.
-  El frontend no debe mostrar un estado "solicitud enviada" para el follow — no existe.
-- **Qué pasa al entrar al perfil de otro usuario que es `PRIVATE`**: la API responde
-  `200` (nunca `404` solo por ser privado — la cuenta existe y eso es visible), pero
-  `bio` viaja en `null`. UX esperada: mostrar nombre, avatar, un aviso tipo "Este perfil
-  es privado" en el lugar donde iría la bio/los posts, y el botón de seguir/dejar de
-  seguir (que funciona normalmente). `followersCount`/`followingCount` **sí** se siguen
-  mostrando con normalidad — ocultarlos es una decisión de producto separada, todavía
-  no implementada.
+
+### ⚠️ Breaking change de comportamiento (Fase 9.3): seguir ya no es siempre inmediato
+
+Reemplaza la limitación documentada en Fase 9.1/9.2 ("el follow sigue siendo inmediato,
+no hay solicitud pendiente"). Ahora:
+
+- **Perfil `PUBLIC`** → `POST /api/follows/{userId}` sigue creando el follow de
+  inmediato. Respuesta: `{ "followState": "FOLLOWING", "requestId": null, ... }`.
+- **Perfil `PRIVATE`** → el mismo `POST /api/follows/{userId}` crea una **solicitud
+  pendiente**, no un follow. Respuesta: `{ "followState": "REQUESTED", "requestId":
+  "uuid", ... }`. **Guardar ese `requestId`** — es lo que se necesita para poder
+  cancelar la solicitud después sin tener que ir a buscarlo a otro lado.
+- Volver a llamar `POST /api/follows/{userId}` mientras ya hay una solicitud pendiente
+  **no falla ni duplica** — devuelve la misma solicitud (mismo `requestId`).
+
+**Estados de UI a manejar** (`followState`, expuesto en el perfil, en discover, y en la
+respuesta del propio follow): `"NONE"` | `"REQUESTED"` | `"FOLLOWING"`.
+
+| Estado | Botón/acción esperada |
+|---|---|
+| `NONE` | "Seguir" → `POST /api/follows/{userId}` |
+| `REQUESTED` | "Solicitud enviada" (deshabilitado o con opción "Cancelar" → `DELETE /api/follow-requests/{requestId}`) |
+| `FOLLOWING` | "Dejar de seguir" → `DELETE /api/follows/{userId}` |
+
+- **Aceptar/rechazar solicitudes recibidas** (pantalla nueva a implementar, ej. dentro
+  de notificaciones o una sección "Solicitudes" del perfil propio):
+  - `GET /api/follow-requests/incoming` — lista de solicitudes pendientes que ME
+    llegaron (`otherUser` = quien la mandó).
+  - `POST /api/follow-requests/{requestId}/accept` — acepta, crea el follow real.
+  - `POST /api/follow-requests/{requestId}/reject` — rechaza, no crea nada. El
+    requester no recibe ninguna notificación de esto (decisión de producto) — no hace
+    falta que el frontend le muestre nada especial tampoco.
+- **Ver mis propias solicitudes enviadas**: `GET /api/follow-requests/outgoing`
+  (`otherUser` = a quién se lo pedí) — útil para una pantalla "solicitudes pendientes"
+  o simplemente para reconciliar estado si se perdió el `requestId` original.
+- **Eliminar un seguidor** (Fase 9.3, nuevo): `DELETE /api/follows/followers/{userId}`
+  — saca a `userId` de MIS seguidores (dirección inversa a "dejar de seguir"). No
+  afecta si yo también lo sigo a él. Corta su acceso a mi perfil/posts
+  `FOLLOWERS_ONLY` de inmediato.
+- **`bio`/perfil completo para un follower aceptado de un perfil `PRIVATE`**: a
+  diferencia de Fase 9.1/9.2 (donde NADA de un perfil privado era visible para
+  terceros), un follower ya **aceptado** ahora ve la `bio` completa y los posts
+  `PUBLIC`/`FOLLOWERS_ONLY` de ese perfil con total normalidad — solo los posts
+  `PRIVATE` siguen siendo exclusivos del autor. Mientras la solicitud esté `PENDING`
+  (o haya sido rechazada/cancelada), sigue sin ver nada, igual que un desconocido.
+- **Qué pasa al entrar al perfil de otro usuario que es `PRIVATE` y no soy follower
+  aceptado**: la API responde `200` (nunca `404` solo por ser privado — la cuenta
+  existe y eso es visible), pero `bio` viaja en `null`. UX esperada: mostrar nombre,
+  avatar, un aviso tipo "Este perfil es privado" en el lugar donde iría la bio/los
+  posts, y el botón de follow que corresponda según `followState`.
+  `followersCount`/`followingCount` **sí** se siguen mostrando con normalidad —
+  ocultarlos es una decisión de producto separada, todavía no implementada.
 - **Qué pasa con los posts de un perfil privado**: `GET /api/users/{userId}/posts`
-  devuelve una página vacía (`200`, `content: []`), no un error — el frontend debe
-  renderizar el estado "sin publicaciones para mostrar" (el mismo que usaría para un
-  perfil público sin posts), no necesita un mensaje especial distinto para "privado".
+  devuelve una página vacía (`200`, `content: []`) si no sos follower aceptado — el
+  frontend debe renderizar el estado "sin publicaciones para mostrar" (el mismo que
+  usaría para un perfil público sin posts), no necesita un mensaje especial distinto
+  para "privado". Si SÍ sos follower aceptado, el listado se comporta como el de
+  cualquier perfil público que seguís.
 - **Feed propio**: siempre incluye el 100% de los posts propios, cualquiera sea su
-  `visibility`, sin importar la propia `profileVisibility`. Los posts de terceros
-  seguidos solo aparecen si el perfil de ese tercero es `PUBLIC` — un post `PUBLIC` de
-  alguien con el perfil en `PRIVATE` no aparece en el feed aunque se lo siga.
-  Comentar/reaccionar sobre un post que dejó de ser visible (ej. el autor puso su
-  perfil en privado después) empieza a fallar con `404` — tratarlo igual que "post no
-  encontrado", sin un mensaje especial.
-- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): pantalla o
-  flujo de "solicitud de seguimiento" para perfiles privados, bloqueo de usuarios,
-  silenciar/mute, listas o círculos de audiencia personalizados, ocultar contadores de
-  seguidores, controles de privacidad de mensajería.
+  `visibility`. Los posts de terceros que seguís efectivamente (aceptado, sea perfil
+  público o privado) aparecen con normalidad (`PUBLIC`+`FOLLOWERS_ONLY`) —
+  ya **no** importa si el perfil de ese tercero está actualmente en `PRIVATE`
+  (reemplaza la limitación de Fase 9.1/9.2). Comentar/reaccionar sobre un post que dejó
+  de ser visible (ej. te sacaron de sus followers) empieza a fallar con `404` —
+  tratarlo igual que "post no encontrado", sin un mensaje especial.
+- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): bloqueo de
+  usuarios, silenciar/mute, listas o círculos de audiencia personalizados, ocultar
+  contadores de seguidores, controles de privacidad de mensajería, expiración
+  automática de solicitudes.
 
 ## Endpoints disponibles
 
@@ -287,7 +328,8 @@ Resumen de superficie por dominio:
 | Users | `/api/users` | perfil propio/ajeno, discover, avatar, privacidad de perfil |
 | Posts | `/api/posts` | CRUD + feed + apoyo ("like") + privacidad de post |
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |
-| Follows | `/api/follows` | seguir/dejar de seguir, listas |
+| Follows | `/api/follows` | seguir/dejar de seguir (inmediato o solicitud según privacidad), listas, eliminar seguidor |
+| Follow Requests | `/api/follow-requests` | aceptar/rechazar/cancelar solicitudes, incoming/outgoing |
 | Statuses | `/api/statuses` | "estado de ánimo" efímero (24h) + reacciones |
 | Availability | `/api/availability` | "modo compañía" efímero (6h) |
 | Chat | `/api/conversations` | conversaciones 1:1, mensajes paginados |

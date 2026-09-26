@@ -4,6 +4,7 @@ import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.comment.CommentRepository;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.post.Post;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.post.PostVisibility;
@@ -51,6 +52,9 @@ class NotificationControllerIntegrationTest {
     private FollowRepository followRepository;
 
     @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
     private PostRepository postRepository;
 
     @Autowired
@@ -82,6 +86,7 @@ class NotificationControllerIntegrationTest {
         commentRepository.deleteAll();
         postSupportRepository.deleteAll();
         postRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();

@@ -4,6 +4,7 @@ import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.notification.NotificationRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -52,6 +53,9 @@ class StatusControllerIntegrationTest {
     private FollowRepository followRepository;
 
     @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
     private StatusReactionRepository statusReactionRepository;
 
     @Autowired
@@ -79,6 +83,7 @@ class StatusControllerIntegrationTest {
         notificationRepository.deleteAll();
         statusReactionRepository.deleteAll();
         statusRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();

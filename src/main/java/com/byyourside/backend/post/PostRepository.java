@@ -13,13 +13,18 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
 
     List<Post> findByAuthorIdOrderByCreatedAtDesc(UUID authorId);
 
-    // Fase 9.1: el perfil PRIVATE del autor domina sobre PostVisibility para
-    // terceros -- por eso "propios" (a.id = :currentUserId) es una rama
-    // separada que ignora tanto profileVisibility como post.visibility (el
-    // dueno ve TODO lo suyo, VISIBLE, sin importar nada mas), mientras que la
-    // rama de terceros exige ademas a.profileVisibility = 'PUBLIC'. Sin esta
-    // rama propia, los posts PRIVATE del propio usuario no aparecerian en su
-    // feed (bug real detectado al escribir los tests de esta fase).
+    // Fase 9.3: :followedUserIds ya viene construido (en PostService.getFeed)
+    // a partir de filas REALES de `follows` -- es decir, ya son todos
+    // followers efectivos/aceptados, sin importar si esa relacion se creo
+    // por un follow inmediato (perfil PUBLIC) o por una FollowRequest
+    // aceptada (perfil PRIVATE). Por eso esta query NO necesita mirar
+    // profileVisibility del autor en absoluto: pertenecer a
+    // :followedUserIds YA implica acceso, y el perfil PRIVATE de un autor
+    // que me acepto no oculta sus posts PUBLIC/FOLLOWERS_ONLY del feed (a
+    // diferencia de Fase 9.1/9.2, donde no existia el concepto de "aceptado"
+    // y el perfil PRIVATE bloqueaba a cualquier tercero sin excepcion).
+    // "propios" (a.id = :currentUserId) sigue siendo una rama separada: el
+    // dueno ve TODO lo suyo (incluido PRIVATE), sin importar nada mas.
     @Query("""
             SELECT p FROM Post p
             JOIN FETCH p.author a
@@ -27,7 +32,7 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
             AND p.status = 'VISIBLE'
             AND (
                 a.id = :currentUserId
-                OR (a.profileVisibility = 'PUBLIC' AND p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY'))
+                OR p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
             )
             ORDER BY p.createdAt DESC
             """)
@@ -35,11 +40,16 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
                                @Param("currentUserId") UUID currentUserId,
                                Pageable pageable);
 
-    // Mismo criterio que findFeedForUser: :isOwner ignora profileVisibility
-    // del autor (uno mismo siempre ve sus propios posts), cualquier otro
-    // viewer requiere ademas a.profileVisibility = 'PUBLIC' -- si el perfil
-    // es PRIVATE y el viewer no es el dueno, ninguna fila matchea nunca,
-    // sin importar canSeeFollowersOnly.
+    // Fase 9.3: a diferencia del feed (que ya parte de una lista de
+    // followers efectivos), acá SI hace falta el gate de profileVisibility,
+    // porque :canSeeFollowersOnly puede ser true para un perfil PUBLIC sin
+    // que eso signifique nada especial (cualquiera ve lo PUBLIC de un perfil
+    // PUBLIC, sea o no follower) -- lo que cambia en esta fase es que ese
+    // mismo gate (perfil PUBLIC O follower efectivo) ahora TAMBIEN abre el
+    // acceso completo a un perfil PRIVATE cuando :canSeeFollowersOnly es
+    // true (es decir, cuando ya hay una fila real en `follows`, ver
+    // PostService.getUserPosts). :isOwner sigue siendo la unica rama que
+    // ademas incluye PRIVATE.
     @Query("""
             SELECT p FROM Post p
             JOIN FETCH p.author a
@@ -48,7 +58,7 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
             AND (
                 :isOwner = true
                 OR (
-                    a.profileVisibility = 'PUBLIC'
+                    (a.profileVisibility = 'PUBLIC' OR :canSeeFollowersOnly = true)
                     AND (
                         p.visibility = 'PUBLIC'
                         OR (p.visibility = 'FOLLOWERS_ONLY' AND :canSeeFollowersOnly = true)

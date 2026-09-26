@@ -5,6 +5,7 @@ import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.comment.CommentRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.notification.NotificationRepository;
 import com.byyourside.backend.support.PostSupportRepository;
 import com.byyourside.backend.user.ProfileVisibility;
@@ -60,6 +61,9 @@ class PostPrivacyIntegrationTest {
     private FollowRepository followRepository;
 
     @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
     private PostRepository postRepository;
 
     @Autowired
@@ -89,6 +93,7 @@ class PostPrivacyIntegrationTest {
         commentRepository.deleteAll();
         postSupportRepository.deleteAll();
         postRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
@@ -160,15 +165,33 @@ class PostPrivacyIntegrationTest {
     }
 
     @Test
-    void shouldHidePublicPost_evenFromFollower_whenAuthorProfileIsPrivate() throws Exception {
+    void shouldShowPublicPost_toAcceptedFollower_whenAuthorProfileIsPrivate() throws Exception {
+        // Fase 9.3: esta fila en `follows` representa una relacion YA
+        // ACEPTADA (nunca existe una fila real para una FollowRequest
+        // todavia PENDING) -- un follower efectivo de un perfil PRIVATE SI
+        // ve sus posts PUBLIC/FOLLOWERS_ONLY. Esto reemplaza el
+        // comportamiento de Fase 9.1/9.2, donde el perfil PRIVATE bloqueaba
+        // a cualquier tercero sin excepcion (ver
+        // docs/BACKEND_ARCHITECTURE.md § Follow requests).
         User other = registerUser("soumia", "soumia@example.com", ProfileVisibility.PRIVATE);
         followRepository.save(Follow.builder().follower(mainUser).following(other).build());
         Post publicPost = savePost(other, "post publico de perfil privado", PostVisibility.PUBLIC);
 
-        // Seguir a alguien no otorga acceso a su perfil privado en esta fase
-        // (no hay aprobacion de seguidores todavia) -- documentado
-        // explicitamente como limitacion.
         mockMvc.perform(get("/api/posts/{postId}", publicPost.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").value("post publico de perfil privado"));
+    }
+
+    @Test
+    void shouldHidePrivatePost_evenFromAcceptedFollower_whenAuthorProfileIsPrivate() throws Exception {
+        User other = registerUser("soumia", "soumia@example.com", ProfileVisibility.PRIVATE);
+        followRepository.save(Follow.builder().follower(mainUser).following(other).build());
+        Post privatePost = savePost(other, "post privado de perfil privado", PostVisibility.PRIVATE);
+
+        // PRIVATE a nivel de post sigue siendo "solo el autor", sin importar
+        // que tan aceptado sea el follower.
+        mockMvc.perform(get("/api/posts/{postId}", privatePost.getId())
                         .header("Authorization", "Bearer " + mainUserToken))
                 .andExpect(status().isNotFound());
     }
@@ -263,16 +286,20 @@ class PostPrivacyIntegrationTest {
     }
 
     @Test
-    void feedShouldExcludeAllPosts_ofPrivateProfileAuthor_evenFollowedPublicOnes() throws Exception { // Y
+    void feedShouldIncludePublicAndFollowersOnlyPosts_ofPrivateProfileAuthor_whenAcceptedFollower() throws Exception { // Z
+        // Fase 9.3: reemplaza el comportamiento de Fase 9.1/9.2 (ver
+        // shouldShowPublicPost_toAcceptedFollower_whenAuthorProfileIsPrivate
+        // en PostPrivacyIntegrationTest para el caso de detalle de post).
         User other = registerUser("soumia", "soumia@example.com", ProfileVisibility.PRIVATE);
         followRepository.save(Follow.builder().follower(mainUser).following(other).build());
         savePost(other, "publico de perfil privado", PostVisibility.PUBLIC);
         savePost(other, "seguidores de perfil privado", PostVisibility.FOLLOWERS_ONLY);
+        savePost(other, "privado de perfil privado", PostVisibility.PRIVATE);
 
         mockMvc.perform(get("/api/posts/feed")
                         .header("Authorization", "Bearer " + mainUserToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content.length()").value(0));
+                .andExpect(jsonPath("$.content.length()").value(2)); // PRIVATE sigue excluido
     }
 
     @Test

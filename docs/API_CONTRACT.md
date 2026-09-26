@@ -539,39 +539,52 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
     "followersCount": 12,
     "followingCount": 5,
     "followedByCurrentUser": false,
-    "profileVisibility": "PUBLIC"
+    "profileVisibility": "PUBLIC",
+    "followState": "NONE"
   }
   ```
+  **Cambio de contrato (Fase 9.3)**: `followState` es un campo nuevo (adición pura al
+  final) — `"NONE" | "REQUESTED" | "FOLLOWING"`. `followedByCurrentUser` se conserva sin
+  romper (sigue siendo `true` únicamente cuando hay una relación `Follow` real/efectiva
+  — nunca `true` para una solicitud `PENDING`); ambos campos nunca pueden contradecirse:
+  `followedByCurrentUser == (followState == "FOLLOWING")` siempre, porque se derivan
+  del mismo chequeo. Viendo el propio perfil, `followState` es siempre `"NONE"`.
 - **Errores**: `404 Not Found` si `userId` no existe.
-- **Perfil `PRIVATE` (Fase 9.1) — vista limitada, nunca 404**: si `profileVisibility` del
-  `userId` consultado es `PRIVATE` y quien pregunta no es el propio dueño, la respuesta
-  sigue siendo `200` (el perfil **existe** y eso es visible) pero `bio` viaja en `null`.
-  El resto de los campos (`username`, `displayName`, `avatarUrl`, `followersCount`,
-  `followingCount`, `followedByCurrentUser`, `profileVisibility`) se devuelven igual que
-  con un perfil `PUBLIC` — **ocultar contadores de seguidores es una decisión de
-  producto separada, fuera de esta fase** (ver `BACKEND_ARCHITECTURE.md` § Privacidad,
-  deuda explícita). El frontend debe usar `profileVisibility: "PRIVATE"` +
-  `bio: null` para decidir cuándo mostrar el aviso "Este perfil es privado" en vez del
-  contenido completo — ver `FRONTEND_HANDOFF.md`.
+- **Perfil `PRIVATE` — vista limitada, nunca 404** (Fase 9.1, semántica de acceso
+  actualizada en Fase 9.3): si `profileVisibility` del `userId` consultado es `PRIVATE`
+  y quien pregunta no es el dueño **ni un follower ya ACEPTADO**, la respuesta sigue
+  siendo `200` (el perfil **existe** y eso es visible) pero `bio` viaja en `null`. Un
+  follower efectivo (`followState: "FOLLOWING"`) de un perfil `PRIVATE` **sí** ve la
+  `bio` completa — antes de Fase 9.3 esto era imposible porque no existía el concepto
+  de "follower aceptado" (todo follow era inmediato). El resto de los campos
+  (`username`, `displayName`, `avatarUrl`, `followersCount`, `followingCount`,
+  `followedByCurrentUser`, `profileVisibility`) se devuelven igual sin importar nada de
+  esto — **ocultar contadores de seguidores es una decisión de producto separada, fuera
+  de esta fase** (ver `BACKEND_ARCHITECTURE.md` § Privacidad, deuda explícita).
 - **`profileVisibility` en el propio perfil**: si `userId` es el propio usuario, esta
   ruta es equivalente a `GET /me` en cuanto a qué tan completo es el perfil — siempre se
   ve completo (mismo criterio "el dueño siempre ve todo" aplicado acá).
-- **Seguir/dejar de seguir sigue funcionando igual sobre un perfil `PRIVATE`**: no hay
-  aprobación de seguidores en esta fase (ver más abajo) — `followedByCurrentUser` refleja
-  el estado real inmediatamente después de `POST /api/follows/{userId}`.
+- **Seguir un perfil `PRIVATE` ya no es inmediato (Fase 9.3)**: ver
+  `POST /api/follows/{userId}` y § 5bis Follow Requests. `followedByCurrentUser` y
+  `followState` reflejan el estado real en cada momento — `REQUESTED` mientras está
+  pendiente, `FOLLOWING` recién después de que el dueño la acepte.
 
 ### `GET /api/users/{userId}/posts`
 Posts de un usuario, respetando visibilidad según la relación con quien pregunta.
 - **Query params**: `page` (default `0`), `size` (default `20`).
-- **Reglas de visibilidad** (evaluadas server-side, no confiar en el frontend):
+- **Reglas de visibilidad** (evaluadas server-side, no confiar en el frontend; Fase
+  9.3 reemplaza la regla de Fase 9.1/9.2 que bloqueaba a CUALQUIER tercero de un perfil
+  `PRIVATE` sin excepción):
   - Si `userId` == usuario autenticado → ve todos sus propios posts, cualquiera sea su
-    `visibility` (incluye `PRIVATE`), **sin importar la `profileVisibility` propia**.
-  - Si `profileVisibility` de `userId` es `PRIVATE` y el que pregunta no es el dueño →
-    **lista vacía** (`200 OK`, `content: []`, nunca `404` — la existencia del usuario ya
-    se confirmó al resolver `userId`; ver `GET /api/users/{userId}` arriba para el mismo
-    criterio). Esto aplica **aunque el que pregunta sea follower** — un perfil `PRIVATE`
-    oculta sus posts a cualquier tercero en esta fase, seguirlo no cambia nada (ver
-    `BACKEND_ARCHITECTURE.md` § Privacidad).
+    `visibility` (incluye `PRIVATE`), sin importar `profileVisibility` propia.
+  - Si `profileVisibility` de `userId` es `PRIVATE`:
+    - Viewer **NO** es un follower efectivo (no sigue, o tiene una solicitud
+      `PENDING`/`REJECTED`/`CANCELLED`) → **lista vacía** (`200 OK`, `content: []`,
+      nunca `404` — la existencia del usuario ya se confirmó al resolver `userId`).
+    - Viewer **SÍ** es un follower efectivo (solicitud `ACCEPTED` en algún momento, o
+      ya lo seguía desde cuando el perfil era `PUBLIC`) → ve `PUBLIC` + `FOLLOWERS_ONLY`
+      del autor, igual que si el perfil fuera `PUBLIC` y lo siguiera. `PRIVATE` sigue
+      siendo exclusivamente del autor.
   - Si `profileVisibility` de `userId` es `PUBLIC`:
     - Si el autenticado sigue a `userId` → ve `PUBLIC` + `FOLLOWERS_ONLY`.
     - Si no → solo `PUBLIC`.
@@ -589,10 +602,13 @@ fuera de alcance de esta fase) — un usuario `PRIVATE` puede aparecer en el lis
 - **Query params**: `page` (default `0`), `size` (default `20`).
 - **Response 200**: `Page<DiscoverUserResponse>`:
   ```json
-  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC" }
+  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC", "followState": "NONE" }
   ```
   `bio` viaja en `null` cuando `profileVisibility` es `PRIVATE` — mismo criterio que
   `GET /api/users/{userId}`, para no exponer el mismo dato por una ruta lateral.
+  `followState` (Fase 9.3) es siempre `"NONE"` o `"REQUESTED"` en este listado en
+  particular — nunca `"FOLLOWING"`, porque discover ya excluye a quienes se sigue
+  efectivamente.
 
 ### `POST /api/users/me/avatar`
 Sube un avatar a Cloudinary y actualiza el perfil propio.
@@ -641,19 +657,25 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
 - **Response 200**: `Page<PostResponse>`.
 - Incluye **todos** los posts propios, cualquiera sea su `visibility` (incluido
   `PRIVATE`) — el feed siempre muestra el 100% de lo que uno mismo publicó.
-- Para posts de terceros que se siguen: solo `status = VISIBLE`,
-  `visibility IN (PUBLIC, FOLLOWERS_ONLY)`, **y además `profileVisibility = PUBLIC` del
-  autor** (Fase 9.1) — un post `PUBLIC` de alguien con el perfil en `PRIVATE` **no**
-  aparece en el feed de sus followers, aunque lo sigan (ver `BACKEND_ARCHITECTURE.md` §
-  Privacidad, "el perfil privado domina").
+- Para posts de terceros que se siguen efectivamente (relación `Follow` real, sin
+  importar si se creó de inmediato por un perfil `PUBLIC` o vía una `FollowRequest`
+  aceptada de uno `PRIVATE`, Fase 9.3): `status = VISIBLE`,
+  `visibility IN (PUBLIC, FOLLOWERS_ONLY)`. El feed **nunca** incluye `PRIVATE` de
+  terceros, sea cual sea el `profileVisibility` del autor.
+- **Ya no depende del `profileVisibility` actual del autor** (reemplaza la regla de
+  Fase 9.1/9.2): si sos follower efectivo de alguien, sus posts `PUBLIC`/
+  `FOLLOWERS_ONLY` aparecen en tu feed aunque su perfil esté en `PRIVATE` — lo que
+  importa es si la relación de follow es real, no el estado actual del perfil.
 
 ### `GET /api/posts/{postId}`
 - **Response 200**: `PostResponse`.
 - **Errores**: `404 Not Found` si el post no existe, si existe pero `visibility` no
-  autoriza al usuario autenticado a verlo, **o si el perfil del autor es `PRIVATE`
-  (Fase 9.1) y quien pregunta no es el propio autor** — nunca `403` en ninguno de estos
-  casos (la API no revela la existencia de un post privado ajeno, ni que su autor tiene
-  el perfil en privado).
+  autoriza al usuario autenticado a verlo, **o si el perfil del autor es `PRIVATE` y
+  quien pregunta no es el autor ni un follower ya ACEPTADO** (Fase 9.1, semántica
+  actualizada en 9.3) — nunca `403` en ninguno de estos casos (la API no revela la
+  existencia de un post privado ajeno, ni que su autor tiene el perfil en privado). Un
+  follower efectivo de un perfil `PRIVATE` ve sus posts `PUBLIC`/`FOLLOWERS_ONLY` con
+  total normalidad — solo `PRIVATE` sigue siendo exclusivo del autor.
 
 ### `PATCH /api/posts/{postId}`
 Solo el autor puede editar. Campos opcionales (solo se aplican los no-null).
@@ -733,30 +755,118 @@ Soft delete (`status = REMOVED`). Permitido para el autor **o** `MODERATOR`/`ADM
 
 ## 5. Follows (`/api/follows`) — requiere autenticación
 
+> **⚠️ Breaking change de comportamiento (Fase 9.3)**: `POST /api/follows/{userId}`
+> **ya no es siempre inmediato**. Reemplaza la limitación documentada en Fase 9.1/9.2
+> ("el follow sigue siendo inmediato, sin aprobación, no existe todavía un sistema de
+> solicitud de seguimiento pendiente") — ese sistema ahora existe. El campo nuevo
+> `followState` en la respuesta le dice al frontend cuál de los dos casos ocurrió.
+
 ### `POST /api/follows/{userId}`
-Seguir a un usuario. Dispara notificación `NEW_FOLLOWER`.
-- **Response 201** (`FollowResponse`): `{ "followerId": "uuid", "followingId": "uuid", "createdAt": "..." }`
+Seguir a un usuario, **o solicitar seguirlo** si su perfil es `PRIVATE`.
+- **Response 201** (`FollowResponse`):
+  ```json
+  { "followerId": "uuid", "followingId": "uuid", "createdAt": "...", "followState": "FOLLOWING", "requestId": null }
+  ```
+  - Perfil objetivo `PUBLIC` → `followState: "FOLLOWING"`, `requestId: null`, `Follow`
+    creado de inmediato (comportamiento histórico sin cambios), notificación
+    `NEW_FOLLOWER` al objetivo.
+  - Perfil objetivo `PRIVATE` → `followState: "REQUESTED"`, `requestId` con el UUID de
+    la `FollowRequest` recién creada (o de la ya existente, ver abajo), **sin** crear
+    `Follow` todavía, notificación `FOLLOW_REQUEST_RECEIVED` al objetivo. El frontend
+    puede usar ese `requestId` para ofrecer "cancelar solicitud" sin tener que llamar
+    primero a `GET /api/follow-requests/outgoing`.
+- **Idempotencia**: llamar de nuevo mientras ya existe una solicitud `PENDING` **no
+  duplica** — devuelve `201` con los mismos `requestId`/`createdAt` de la solicitud ya
+  existente. Distinto del caso "ya te sigue" (ver abajo), que sigue siendo `409`.
 - **Errores**: `400 Bad Request` (intentar seguirte a vos mismo), `404 Not Found`
-  (usuario objetivo no existe), `409 Conflict` (ya lo seguías).
-- **Perfil `PRIVATE` del objetivo (Fase 9.1)**: el follow sigue siendo **inmediato**, sin
-  aprobación — no existe todavía un sistema de "solicitud de seguimiento" pendiente.
-  Seguir a un perfil `PRIVATE` no otorga acceso a sus posts (ver `GET
-  /api/users/{userId}/posts` y `BACKEND_ARCHITECTURE.md` § Privacidad): la privacidad de
-  perfil controla **visibilidad**, no aprobación de follow. Esto es una limitación
-  conocida y documentada, no un bug.
+  (usuario objetivo no existe), `409 Conflict` (ya existe una relación `Follow`
+  **efectiva** — sin importar el `profileVisibility` actual del objetivo; si vos ya lo
+  seguías de antes y ahora puso su perfil en privado, seguís siguiendolo igual, sin
+  necesidad de una solicitud nueva).
 
 ### `DELETE /api/follows/{userId}`
+Deja de seguir a alguien que **ya seguís efectivamente** (relación `Follow` real).
 - **Response**: `204 No Content`.
-- **Errores**: `404 Not Found` si no lo seguías.
+- **Errores**: `404 Not Found` si no lo seguís.
+- **No cancela solicitudes pendientes**: si lo que tenés con `userId` es una
+  `FollowRequest` `PENDING` (todavía no te aceptó), este endpoint devuelve `404` (no hay
+  `Follow` que borrar) — hay que usar `DELETE /api/follow-requests/{requestId}` para
+  cancelar una solicitud enviada. Responsabilidades separadas a propósito: "dejar de
+  seguir" y "cancelar una solicitud" son acciones distintas, sobre recursos distintos
+  (ver `GET /api/follow-requests/outgoing` para encontrar el `requestId` si no se
+  guardó el que devolvió el `POST /api/follows/{userId}` original).
+
+### `DELETE /api/follows/followers/{userId}` (Fase 9.3)
+Elimina a `userId` de **tus propios seguidores** — dirección inversa a `unfollow`
+(acá `userId` es alguien que te sigue a vos, no alguien a quien vos seguís).
+- **Response**: `204 No Content`.
+- **Errores**: `404 Not Found` si `userId` no te sigue actualmente.
+- **No afecta la relación inversa**: si vos también seguís a `userId`, eso queda
+  intacto — sacar a alguien de tus seguidores no es lo mismo que dejar de seguirlo vos.
+- **Corta el acceso de inmediato**: si `userId` tenía acceso a contenido
+  `FOLLOWERS_ONLY`/a tu perfil `PRIVATE` completo por ser tu follower, ese acceso
+  desaparece en el mismo momento (es la misma fila de `follows` que consultan
+  `ProfileAccessPolicy`/`PostAccessPolicy`, sin ventana de gracia ni caché).
 
 ### `GET /api/follows/{userId}/followers`
-**No pagina** — `List<UserSummary>` de quienes siguen a `userId`. No requiere que
-`userId` sea el usuario autenticado (cualquier autenticado puede ver los followers de
-cualquiera).
+**No pagina** — `List<UserSummary>` de quienes siguen efectivamente a `userId` (nunca
+incluye solicitudes `PENDING`). No requiere que `userId` sea el usuario autenticado
+(cualquier autenticado puede ver los followers de cualquiera).
 - **Errores**: `404 Not Found` si `userId` no existe.
 
 ### `GET /api/follows/{userId}/following`
 Igual que arriba pero a quiénes sigue `userId`. **No pagina**.
+
+---
+
+## 5bis. Follow Requests (`/api/follow-requests`) — requiere autenticación
+
+Todas las solicitudes son creadas por `POST /api/follows/{userId}` (ver arriba) cuando
+el objetivo tiene el perfil en `PRIVATE` — este namespace es exclusivamente para
+**gestionar** una solicitud ya creada (aceptar, rechazar, cancelar, listar). No hay un
+`POST /api/follow-requests` directo.
+
+### `FollowRequestResponse` (forma común)
+```json
+{ "requestId": "uuid", "otherUser": { /* UserSummary */ }, "createdAt": "...", "status": "PENDING" }
+```
+`otherUser` es el **requester** en un listado de incoming, o el **target** en uno de
+outgoing — siempre "la otra persona involucrada". `status` es
+`PENDING`/`ACCEPTED`/`REJECTED`/`CANCELLED` (el historial completo del trámite — no
+confundir con `followState`, que es el resumen de "cómo estoy parado hoy" usado en
+perfil/discover/`POST /api/follows/{userId}`).
+
+### `POST /api/follow-requests/{requestId}/accept`
+Solo el **target** de la solicitud puede aceptarla.
+- **Response 200**: `FollowRequestResponse` con `status: "ACCEPTED"`.
+- **Efecto**: crea la relación `Follow` real (si no existía ya) y dispara notificación
+  `FOLLOW_REQUEST_ACCEPTED` al requester.
+- **Errores**: `404 Not Found` (solicitud inexistente), `403 Forbidden` (no sos el
+  target), `409 Conflict` (ya no está `PENDING` — ya fue aceptada/rechazada/cancelada,
+  o una request concurrente ya la resolvió primero).
+
+### `POST /api/follow-requests/{requestId}/reject`
+Solo el **target**.
+- **Response 200**: `FollowRequestResponse` con `status: "REJECTED"`.
+- **Efecto**: nunca crea `Follow`. **No dispara notificación** al requester (decisión de
+  producto: rechazar no aporta valor suficiente como para justificar avisarle).
+- **Errores**: mismos criterios que `accept` (404/403/409).
+- **Después de un rechazo**: el requester puede enviar una solicitud nueva más adelante
+  sin restricciones — un rechazo no bloquea reintentos futuros.
+
+### `DELETE /api/follow-requests/{requestId}`
+Cancela una solicitud propia. Solo el **requester**.
+- **Response**: `204 No Content`.
+- **Errores**: `404 Not Found`, `403 Forbidden` (no sos el requester), `409 Conflict`
+  (ya no está `PENDING`).
+
+### `GET /api/follow-requests/incoming`
+Solicitudes `PENDING` que **otros te enviaron a vos** (target). **No pagina** —
+`List<FollowRequestResponse>`, `otherUser` = el requester.
+
+### `GET /api/follow-requests/outgoing`
+Solicitudes `PENDING` que **vos enviaste** (requester). **No pagina** —
+`List<FollowRequestResponse>`, `otherUser` = el target.
 
 ---
 

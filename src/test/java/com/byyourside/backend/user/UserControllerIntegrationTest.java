@@ -4,6 +4,7 @@ import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.storage.ImageStorageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,6 +55,9 @@ class UserControllerIntegrationTest {
     private FollowRepository followRepository;
 
     @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
     private EmailVerificationTokenRepository emailVerificationTokenRepository;
 
     @MockBean
@@ -61,6 +65,7 @@ class UserControllerIntegrationTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();   // ← primero: borra lo que referencia a users
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();

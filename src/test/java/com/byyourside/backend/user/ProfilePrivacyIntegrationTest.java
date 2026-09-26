@@ -4,6 +4,7 @@ import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.notification.NotificationRepository;
 import com.byyourside.backend.storage.ImageStorageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,6 +49,9 @@ class ProfilePrivacyIntegrationTest {
     private FollowRepository followRepository;
 
     @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
     private NotificationRepository notificationRepository;
 
     @Autowired
@@ -68,6 +72,7 @@ class ProfilePrivacyIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         notificationRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
@@ -261,22 +266,45 @@ class ProfilePrivacyIntegrationTest {
                 .isEqualTo(ProfileVisibility.PUBLIC);
     }
 
-    // --- H/I: follow sigue siendo inmediato, sin follow requests ---
+    // --- H/I: perfil PRIVATE ahora requiere aceptacion (Fase 9.3) ---
+    //
+    // Reemplaza el comportamiento de Fase 9.1/9.2 (follow siempre inmediato,
+    // sin excepcion) -- el core de follow requests (crear, listar, aceptar,
+    // rechazar, cancelar) tiene su propia cobertura dedicada en
+    // FollowRequestIntegrationTest; aca solo se cubre el efecto inmediato
+    // sobre el propio perfil/GET, para no duplicar.
 
     @Test
-    void shouldFollowImmediately_evenWhenTargetProfileIsPrivate() throws Exception {
+    void shouldCreatePendingRequest_insteadOfImmediateFollow_whenTargetProfileIsPrivate() throws Exception {
         User other = registerUser("soumia", "soumia@example.com", ProfileVisibility.PRIVATE);
 
         mockMvc.perform(post("/api/follows/{userId}", other.getId())
                         .header("Authorization", "Bearer " + mainUserToken))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.followState").value("REQUESTED"));
 
-        // Sin aprobacion pendiente: la relacion queda activa de inmediato,
-        // reflejada ya en el mismo GET de perfil.
+        // Sin aceptacion todavia: el perfil NO refleja un follow activo.
         mockMvc.perform(get("/api/users/{userId}", other.getId())
                         .header("Authorization", "Bearer " + mainUserToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.followedByCurrentUser").value(true));
+                .andExpect(jsonPath("$.followedByCurrentUser").value(false))
+                .andExpect(jsonPath("$.followState").value("REQUESTED"));
+    }
+
+    @Test
+    void shouldFollowImmediately_whenTargetProfileIsPublic() throws Exception {
+        User other = registerUser("soumia", "soumia@example.com", ProfileVisibility.PUBLIC);
+
+        mockMvc.perform(post("/api/follows/{userId}", other.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.followState").value("FOLLOWING"));
+
+        mockMvc.perform(get("/api/users/{userId}", other.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.followedByCurrentUser").value(true))
+                .andExpect(jsonPath("$.followState").value("FOLLOWING"));
     }
 
     @Test

@@ -46,6 +46,9 @@ class FollowControllerIntegrationTest {
     private FollowRepository followRepository;
 
     @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @Autowired
@@ -64,6 +67,7 @@ class FollowControllerIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         notificationRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
