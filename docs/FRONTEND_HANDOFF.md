@@ -318,9 +318,20 @@ Ver `WEBSOCKET_CONTRACT.md` para el contrato completo. Puntos clave para la inte
 
 ## Limitaciones actuales conocidas (del backend, verificadas en código)
 
-- No hay refresh token ni revocación de tokens — un JWT emitido es válido hasta que
-  expira, sin forma de invalidarlo del lado servidor (ej. tras un logout "real" o un
-  cambio de contraseña — tampoco existe endpoint de cambio de contraseña).
+- El access JWT ya emitido puede seguir funcionando hasta 15 minutos después de un
+  `logout`, un cambio/reset de contraseña, o un reuse de refresh token detectado — no
+  hay blacklist de access tokens (ver `BACKEND_ARCHITECTURE.md` § Sesiones). El
+  `refreshToken` sí queda inutilizado de inmediato en los cuatro casos.
+- El `refreshToken` viaja como JSON en el body de `POST /api/auth/refresh` y
+  `POST /api/auth/logout` (no como cookie). El almacenamiento actual del lado frontend
+  es temporal en `localStorage`; una migración a cookie `HttpOnly`/`Secure`/`SameSite`
+  queda pendiente para una fase posterior, todavía no confirmada.
+- No hay pantalla de gestión de sesiones/dispositivos (listar o cerrar sesiones activas
+  individualmente desde la cuenta) — el único cierre de sesión disponible hoy es
+  `logout` (la propia sesión) o la revocación total implícita de
+  `change-password`/`reset-password` (todas las sesiones a la vez).
+- No hay cleanup periódico de `auth_sessions` — las filas rotadas/revocadas/expiradas se
+  acumulan en la base sin borrarse (ver `BACKEND_ARCHITECTURE.md` § Sesiones).
 - No hay endpoint para editar el `username` (handle) una vez generado.
 - No hay búsqueda de usuarios por texto — `GET /api/users/discover` es un listado sin
   filtro de búsqueda.
