@@ -1,5 +1,6 @@
 package com.byyourside.backend.follow;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.notification.NotificationRepository;
@@ -56,6 +57,9 @@ class FollowRequestIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -95,6 +99,7 @@ class FollowRequestIntegrationTest {
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
         userRepository.deleteAll();
 
         requester = registerUser("requester", "requester@example.com", ProfileVisibility.PUBLIC);

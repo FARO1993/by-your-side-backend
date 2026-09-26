@@ -1,5 +1,7 @@
 package com.byyourside.backend.user;
 
+import com.byyourside.backend.block.BlockService;
+import com.byyourside.backend.block.dto.BlockedUserResponse;
 import com.byyourside.backend.post.PostService;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.security.UserPrincipal;
@@ -27,6 +29,7 @@ public class UserController {
 
     private final UserService userService;
     private final PostService postService;
+    private final BlockService blockService;
 
     @GetMapping("/me")
     public ResponseEntity<UserResponse> getCurrentUser(@AuthenticationPrincipal UserPrincipal principal) {
@@ -66,5 +69,29 @@ public class UserController {
     public ResponseEntity<UserResponse> updateAvatar(@AuthenticationPrincipal UserPrincipal principal,
                                                      @RequestParam("file") MultipartFile file) {
         return ResponseEntity.ok(userService.updateAvatar(principal, file));
+    }
+
+    // El blocker es SIEMPRE el usuario autenticado -- nunca se acepta un
+    // blockerId por body/path distinto al principal.
+    @PostMapping("/{userId}/block")
+    public ResponseEntity<Void> blockUser(@AuthenticationPrincipal UserPrincipal principal,
+                                          @PathVariable UUID userId) {
+        blockService.blockUser(principal.getId(), userId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/{userId}/block")
+    public ResponseEntity<Void> unblockUser(@AuthenticationPrincipal UserPrincipal principal,
+                                            @PathVariable UUID userId) {
+        blockService.unblockUser(principal.getId(), userId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/me/blocked")
+    public ResponseEntity<Page<BlockedUserResponse>> getBlockedUsers(@AuthenticationPrincipal UserPrincipal principal,
+                                                                      @RequestParam(defaultValue = "0") int page,
+                                                                      @RequestParam(defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return ResponseEntity.ok(blockService.getBlockedUsers(principal.getId(), pageable));
     }
 }

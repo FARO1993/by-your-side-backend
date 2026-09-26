@@ -25,6 +25,14 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
     // y el perfil PRIVATE bloqueaba a cualquier tercero sin excepcion).
     // "propios" (a.id = :currentUserId) sigue siendo una rama separada: el
     // dueno ve TODO lo suyo (incluido PRIVATE), sin importar nada mas.
+    // Fase 9.4: el NOT EXISTS de bloqueo aca es defensa en profundidad -- en
+    // la practica, :followedUserIds ya nunca puede contener a alguien
+    // bloqueado (BlockService.blockUser borra la fila `follows` en ambas
+    // direcciones en el momento de bloquear, y FollowService.follow()
+    // rechaza crear una nueva mientras el bloqueo siga activo), pero la
+    // consigna de esta fase pide el filtro explicito en la query del feed
+    // (no solo depender de esa invariante transitiva) para no depender
+    // silenciosamente de que esa limpieza nunca tenga un bug.
     @Query("""
             SELECT p FROM Post p
             JOIN FETCH p.author a
@@ -33,6 +41,11 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
             AND (
                 a.id = :currentUserId
                 OR p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM UserBlock b
+                WHERE (b.blocker.id = :currentUserId AND b.blocked.id = a.id)
+                OR (b.blocker.id = a.id AND b.blocked.id = :currentUserId)
             )
             ORDER BY p.createdAt DESC
             """)

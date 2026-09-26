@@ -1,5 +1,6 @@
 package com.byyourside.backend.status;
 
+import com.byyourside.backend.block.BlockPolicy;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.notification.NotificationService;
 import com.byyourside.backend.notification.NotificationType;
@@ -31,6 +32,7 @@ public class StatusService {
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
     private final NotificationService notificationService;
+    private final BlockPolicy blockPolicy;
 
     @Transactional
     public StatusResponse setStatus(UserPrincipal principal, StatusMood mood) {
@@ -52,7 +54,8 @@ public class StatusService {
                 .collect(Collectors.toList());
         relevantUserIds.add(principal.getId());
 
-        List<Status> activeStatuses = statusRepository.findActiveStatusesForUsers(relevantUserIds, Instant.now());
+        List<Status> activeStatuses = statusRepository.findActiveStatusesForUsers(
+                relevantUserIds, Instant.now(), principal.getId());
 
         // La query ya viene ordenada por usuario + mas reciente primero:
         // nos quedamos con la primera ocurrencia de cada usuario (su estado actual).
@@ -71,6 +74,14 @@ public class StatusService {
     public StatusResponse react(UserPrincipal principal, UUID statusId, StatusReactionType type) {
         Status status = statusRepository.findById(statusId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Status not found"));
+
+        // Fase 9.4: reaccionar a un estado es una interaccion directa
+        // usuario-a-usuario que no pasa por PostAccessPolicy (los estados son
+        // un dominio separado de los posts) -- mismo 404 generico que un
+        // status inexistente, para no revelar el bloqueo.
+        if (blockPolicy.isBlockedBetween(principal.getId(), status.getUser().getId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Status not found");
+        }
 
         User actor = userRepository.findById(principal.getId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));

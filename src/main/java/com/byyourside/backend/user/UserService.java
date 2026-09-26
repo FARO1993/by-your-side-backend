@@ -1,5 +1,6 @@
 package com.byyourside.backend.user;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.follow.FollowRequestStatus;
@@ -34,6 +35,7 @@ public class UserService {
     private final FollowRequestRepository followRequestRepository;
     private final ImageStorageService imageStorageService;
     private final ProfileAccessPolicy profileAccessPolicy;
+    private final UserBlockRepository userBlockRepository;
 
     public UserResponse getCurrentUser(UserPrincipal principal) {
         User user = findByIdOrThrow(principal.getId());
@@ -80,6 +82,20 @@ public class UserService {
         User target = userRepository.findById(userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
 
+        // Fase 9.4: si el TARGET me bloqueo a mi, su perfil se trata como
+        // inexistente -- mismo 404 generico que un usuario que nunca existio,
+        // a proposito indistinguible (no revela que fui bloqueado). Si en
+        // cambio soy YO quien lo bloqueo, sigo pudiendo ver esta tarjeta
+        // (limitada, ver blockedByCurrentUser mas abajo) para poder
+        // desbloquearlo desde su perfil.
+        if (!principal.getId().equals(userId)
+                && userBlockRepository.existsByBlockerIdAndBlockedId(userId, principal.getId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+        }
+
+        boolean blockedByCurrentUser = !principal.getId().equals(userId)
+                && userBlockRepository.existsByBlockerIdAndBlockedId(principal.getId(), userId);
+
         long followersCount = followRepository.countByFollowingId(userId);
         long followingCount = followRepository.countByFollowerId(userId);
         boolean isOwnProfile = principal.getId().equals(userId);
@@ -115,7 +131,8 @@ public class UserService {
                 followingCount,
                 followedByCurrentUser,
                 target.getProfileVisibility().name(),
-                followState.name()
+                followState.name(),
+                blockedByCurrentUser
         );
     }
 
@@ -123,6 +140,12 @@ public class UserService {
         Set<UUID> excludedIds = followRepository.findByFollowerId(principal.getId()).stream()
                 .map(follow -> follow.getFollowing().getId())
                 .collect(Collectors.toSet());
+
+        // Fase 9.4: exclusion bilateral de bloqueo -- 2 consultas batch para
+        // toda la lista (a quien bloquee + quien me bloqueo a mi), no una
+        // consulta por fila de discover.
+        excludedIds.addAll(userBlockRepository.findBlockedIdsByBlocker(principal.getId()));
+        excludedIds.addAll(userBlockRepository.findBlockerIdsByBlocked(principal.getId()));
 
         excludedIds.add(principal.getId());
 

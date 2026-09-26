@@ -1,5 +1,6 @@
 package com.byyourside.backend.post;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.comment.CommentRepository;
@@ -55,6 +56,9 @@ class PostPrivacyIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -97,6 +101,7 @@ class PostPrivacyIntegrationTest {
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
         userRepository.deleteAll();
 
         mainUser = registerUser("facu", "facu@example.com", ProfileVisibility.PUBLIC);

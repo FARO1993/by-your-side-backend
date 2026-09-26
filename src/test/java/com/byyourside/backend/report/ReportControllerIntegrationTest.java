@@ -1,5 +1,6 @@
 package com.byyourside.backend.report;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.user.User;
@@ -41,6 +42,9 @@ class ReportControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -65,6 +69,7 @@ class ReportControllerIntegrationTest {
         reportRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
         userRepository.deleteAll();
 
         regularUser = registerUser("facu", "facu@example.com", UserRole.USER);

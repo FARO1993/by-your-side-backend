@@ -1,5 +1,6 @@
 package com.byyourside.backend.auth;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.user.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,9 @@ class AuthControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -41,6 +45,7 @@ class AuthControllerIntegrationTest {
     void cleanUp() {
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
         userRepository.deleteAll();
     }
 
