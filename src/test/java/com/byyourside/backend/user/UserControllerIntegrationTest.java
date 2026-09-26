@@ -1,5 +1,6 @@
 package com.byyourside.backend.user;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
@@ -44,6 +45,9 @@ class UserControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -69,6 +73,7 @@ class UserControllerIntegrationTest {
         followRepository.deleteAll();   // ← primero: borra lo que referencia a users
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
         userRepository.deleteAll();     // ← ahora sí, sin FKs pendientes
 
         String registerBody = """

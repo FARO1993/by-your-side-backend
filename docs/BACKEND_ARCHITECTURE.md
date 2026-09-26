@@ -29,6 +29,9 @@ com.byyourside.backend
 │                   AuthSessionService/Session(Repository) + AuthSessionRevocationGuard
 │                   — refresh tokens con rotación y deteccion de reuse (Fase 1.5)
 ├── availability    Modo compañía: Availability, CompanionIntent
+├── block           UserBlock, BlockPolicy (isBlockedBetween, punto central reutilizado
+│                   por profile/post/follow/chat/notification/status/discover/
+│                   availability), BlockService (bloqueo + limpieza transaccional) — Fase 9.4
 ├── chat            Conversation, Message — REST + push WebSocket
 ├── comment         Comment, CommentStatus — anidado bajo /api/posts/{postId}/comments
 ├── config          SecurityConfig, AdminBootstrap
@@ -393,12 +396,131 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   historial de un trámite puntual) -- responden preguntas distintas, nunca se
   confunden ni pueden contradecirse entre sí (`followedByCurrentUser` se sigue
   derivando del mismo chequeo que `followState == FOLLOWING`).
-- **Deuda explícita (fuera de alcance)**: block, mute, custom audiences/círculos como
+- **Deuda explícita (fuera de alcance)**: mute, custom audiences/círculos como
   audiencia, privacidad de perfil por campo individual, ocultar contadores de
   seguidores, controles de privacidad de mensajería, discovery privacy avanzada (`GET
   /api/users/discover` no filtra por `profileVisibility` ni por `followState`),
   expiración automática de `FollowRequest`, rate limiting específico para follow
-  requests, recomendaciones/anti-spam.
+  requests, recomendaciones/anti-spam. (`block` dejó de estar en esta lista — ver
+  "Bloqueo de usuarios (Fase 9.4)" más abajo.)
+
+## Bloqueo de usuarios (Fase 9.4)
+
+- **`UserBlock`** (paquete `block`): `blocker`, `blocked`, `createdAt`. Direccional en la
+  tabla (`blocker_id`, `blocked_id`, `UNIQUE(blocker_id, blocked_id)`,
+  `CHECK(blocker_id <> blocked_id)`) — a diferencia de `FollowRequest`, no tiene campo de
+  estado: desbloquear es un `DELETE` liso de la fila, sin historial (decisión explícita,
+  ver `V10`). `V10__add_user_blocks.sql`.
+- **`BlockPolicy.isBlockedBetween(userAId, userBId)`** (paquete `block`): único punto
+  central para "¿hay un bloqueo entre estos dos usuarios, en cualquier dirección?" — una
+  sola consulta (`existsBilateral`, `OR` sobre ambos sentidos) en vez de que cada caller
+  reimplemente el `OR`. **Todo** el resto del código llama acá: `ProfileAccessPolicy`,
+  `FollowService`, `ChatService`, `NotificationService`, `StatusService`, discover,
+  availability. Mismo criterio de centralización que `ProfileAccessPolicy`/
+  `PostAccessPolicy` en fases anteriores.
+- **`BlockService.blockUser`/`unblockUser`** (paquete `block`): la operación de bloqueo
+  completa (crear la fila + toda la limpieza asociada) vive en un único método
+  `@Transactional`, tal como pide la fase — no hay pasos sueltos que puedan quedar a
+  medio hacer. `blockUser` es idempotente (bloquear dos veces no falla, atrapa el
+  `DataIntegrityViolationException` de la carrera igual que `FollowService.requestFollow`)
+  y, en la misma transacción:
+  - Borra cualquier `Follow` real en ambas direcciones.
+  - Cancela (`claimCancel`, mismo claim atómico que usa `FollowRequestService`) cualquier
+    `FollowRequest` `PENDING` en ambas direcciones, sin tocar filas históricas
+    `ACCEPTED`/`REJECTED`.
+  - `unblockUser` es *solo* el `DELETE` de la fila — no reconstruye nada de lo anterior
+    (ver `API_CONTRACT.md` §12 para la justificación completa de esta asimetría).
+- **Un solo cambio de código propaga el bloqueo a perfil + posts + comentarios/apoyo**:
+  igual que en Fase 9.3 con "accepted follower", agregar el chequeo de bloqueo **una
+  sola vez** dentro de `ProfileAccessPolicy.canViewFullProfile` (antes de mirar
+  `profileVisibility`) hace que `PostAccessPolicy.canView` (que ya delegaba ahí para
+  `FOLLOWERS_ONLY`/`PRIVATE`) empiece a bloquear también el acceso a posts `PUBLIC` de un
+  perfil `PUBLIC` — sin tocar `PostAccessPolicy`, `CommentService` ni
+  `PostSupportService`. Cero duplicación de lógica.
+- **Asimetría deliberada en `getPublicProfile`**: el chequeo de bloqueo tiene dos ramas
+  con tratamiento distinto, y **no** es un descuido:
+  - Si el **target** bloqueó al viewer → `404 Not Found` antes de siquiera calcular
+    `followState`/`fullProfile` (mismo mensaje genérico que un usuario inexistente).
+  - Si el **viewer** bloqueó al target → sigue devolviendo `200`, delegando en
+    `ProfileAccessPolicy.canViewFullProfile` (que al ver el bloqueo devuelve `false`) para
+    la vista limitada — igual tratamiento que un perfil `PRIVATE` sin follow. Esto es lo
+    que permite exponer `blockedByCurrentUser: true` en la respuesta (para que el
+    frontend ofrezca "desbloquear" desde la propia tarjeta de perfil) sin nunca exponer
+    el campo equivalente en el otro sentido, que ni siquiera llegaría a esta rama del
+    código porque ya cortó en el `404` de arriba.
+- **`getUserPosts` — chequeo previo, no query-level**: a diferencia del feed (ver abajo),
+  acá se hace un único `isBlockedBetween` antes de tocar `findVisiblePostsByAuthor` y se
+  devuelve `Page.empty(pageable)` de inmediato si hay bloqueo — más eficiente que embeber
+  el `OR` de bloqueo en esa query (evita ejecutarla directamente) para el caso de un solo
+  autor, y no duplica el join de `UserBlock` en ella.
+- **Feed (posts y status) — filtro explícito en la query, aunque ya sea redundante**:
+  bloquear ya limpia `follows` bilateralmente y el feed solo mira
+  `:followedUserIds`/gente que se sigue, así que por construcción un bloqueado nunca
+  debería aparecer — pero la fase pidió el filtro explícito en la query del feed (no
+  post-filtrado en Java) como defensa en profundidad, así que `findFeedForUser`
+  (`PostRepository`) y `findActiveStatusesForUsers` (`StatusRepository`) llevan además un
+  `NOT EXISTS` sobre `UserBlock` bilateral. Documentado así a propósito: si algún día la
+  limpieza de `follows` al bloquear tuviera un bug, el feed seguiría protegido igual.
+- **Discover y disponibilidad — exclusión bilateral batch**: `UserService.discoverUsers`
+  agrega los ids bloqueados-por-mí y bloqueadores-de-mí (2 consultas batch,
+  `findBlockedIdsByBlocker`/`findBlockerIdsByBlocked`) al mismo `excludedIds` que ya usa
+  para followers, antes de paginar — ninguna consulta por fila.
+  `AvailabilityRepository.findRandomAvailable` (query nativa) lleva el mismo `NOT EXISTS`
+  bilateral que el feed, ya que no hay forma de reusar `BlockPolicy` ahí sin volverlo
+  N+1 (una consulta por candidato).
+- **Chat — decisión explícita, documentada en `API_CONTRACT.md` §12**: bloquear impide
+  `POST /api/conversations/{userId}` (crear una conversación nueva **o** reabrir una ya
+  existente vía este endpoint específico) y `POST .../messages` (enviar un mensaje
+  nuevo), tratando el bloqueo igual que "no conectados, no disponible" en
+  `ChatService.getOrCreateConversation` (mismo `403` genérico, sin mensaje distinto).
+  **`GET /api/conversations` y `GET .../messages` no se tocan** — el historial completo
+  sigue siendo legible por ambas partes sin ninguna restricción, y la conversación sigue
+  apareciendo en el listado. Se evaluó ocultar la conversación bloqueada del listado en
+  vez de dejarla visible en modo solo lectura, y se descartó: ocultarla la volvería
+  inalcanzable desde el frontend sin borrar nada, lo cual es peor UX que simplemente
+  dejarla visible y deshabilitar únicamente el envío de mensajes nuevos.
+- **WebSocket — confirmado push-only, sin superficie de bypass**: no existe ningún
+  `@MessageMapping` en todo el código — el único canal de salida es
+  `SimpMessagingTemplate.convertAndSendToUser` (server → cliente), nunca al revés. El
+  único punto de entrada para enviar un mensaje es el `POST` REST de arriba, así que el
+  chequeo de bloqueo ahí es suficiente; no hay forma de bypassear el bloqueo por WS
+  porque no hay ningún endpoint WS que reciba mensajes del cliente.
+- **`NotificationService.notify()` — guarda centralizada**: un único `if
+  (blockPolicy.isBlockedBetween(...)) return;` al principio del método, antes de crear la
+  fila `Notification` y antes del push por WS. En la práctica, hoy es redundante (todos
+  los callers actuales — follow, comentario, apoyo, reacción de estado, follow request —
+  ya rechazan la acción que dispara la notificación antes de llegar acá), pero centraliza
+  la protección en un solo lugar en vez de confiar en que cada futuro caller la reimplemente.
+  **No hay tipo de notificación de sistema/admin en este esquema** todavía, así que no
+  hizo falta una excepción para no silenciar avisos administrativos — si se agrega uno en
+  el futuro, debe evitar pasar por este `notify()` genérico o esta guarda lo silenciaría
+  también.
+- **`StatusService.react()` — interacción directa fuera de `PostAccessPolicy`**: los
+  estados son un dominio separado de los posts y `react()` no tenía (ni tiene, fuera del
+  bloqueo) ningún chequeo de visibilidad — es el único punto de interacción directa
+  usuario-a-usuario detectado en la auditoría de esta fase que no pasa por ninguna policy
+  existente, así que necesitó su propio `isBlockedBetween` explícito (mismo `404`
+  genérico que un status inexistente). `removeReaction` (quitar tu propia reacción) no se
+  tocó — mismo criterio que `removeSupport`/editar tu comentario: gestionar algo tuyo ya
+  hecho no es crear una interacción nueva.
+- **Moderación/reportes intactos**: `ReportService`/`deletePost`/`deleteComment` no pasan
+  por `BlockPolicy` en absoluto — un bloqueo nunca impide reportar a alguien ni le
+  quita/agrega capacidades a un moderador/admin. Verificado explícitamente con un test
+  (`moderatorCanStillDeletePost_evenIfAuthorBlockedTheModerator`).
+- **Concurrencia — carrera aceptada, no cerrada por completo**: bloquear-mientras-se-
+  sigue (A llama `follow(B)` mientras B llama `block(A)` casi al mismo tiempo) tiene una
+  ventana angosta de TOCTOU entre el chequeo `isBlockedBetween` de `FollowService.follow`
+  y el `save()` del `Follow`, versus el `DELETE` de limpieza de `BlockService.blockUser` —
+  en el peor caso podría quedar una fila `Follow` residual post-bloqueo. Cerrar esto por
+  completo requeriría un lock explícito o un trigger de DB que vincule ambas tablas, que
+  se consideró sobre-ingeniería para el alcance de esta fase (mismo criterio de "no
+  sobrecomplicar" aplicado en fases anteriores a otras carreras cross-tabla). Accept/
+  reject-vs-bloqueo, en cambio, sí queda completamente cerrado por el claim atómico
+  compartido (`claimCancel`/`claimAccept` sobre la misma fila `FollowRequest`).
+- **Deuda explícita (fuera de alcance)**: mute, ocultar un post puntual, ocultar a un
+  usuario sin bloquearlo, reporte automático al bloquear, motivo de bloqueo, bloqueo
+  temporizado, "amigos cercanos"/audiencias personalizadas/círculos, bloqueo por
+  dispositivo, rate limiting/anti-abuso más allá de lo ya existente.
 
 ## Persistencia
 
@@ -427,6 +549,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V7__add_auth_sessions.sql` | tabla `auth_sessions` |
 | `V8__add_profile_visibility.sql` | `users.profile_visibility` |
 | `V9__add_follow_requests.sql` | tabla `follow_requests` |
+| `V10__add_user_blocks.sql` | tabla `user_blocks` |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`
@@ -516,9 +639,12 @@ un problema actual, pero es una limitación a tener en cuenta antes de escalar.
 
 ## Testing
 
-- **Integration tests** (`src/test/java/.../*ControllerIntegrationTest.java`) para:
-  admin, auth, availability, chat, comment, follow, notification, post, report, status,
-  user, más `AdminBootstrapIntegrationTest`. Usan Testcontainers (`postgresql`,
+- **Integration tests** (`src/test/java/.../*ControllerIntegrationTest.java` y afines)
+  para: admin, auth, availability, chat, comment, follow (`FollowControllerIntegrationTest`,
+  `FollowRequestIntegrationTest`), notification, post (`PostControllerIntegrationTest`,
+  `PostPrivacyIntegrationTest`), report, status, user (`UserControllerIntegrationTest`,
+  `ProfilePrivacyIntegrationTest`), `block.BlockIntegrationTest` (Fase 9.4), más
+  `AdminBootstrapIntegrationTest`. Usan Testcontainers (`postgresql`,
   `spring-boot-testcontainers`, `junit-jupiter`) — levantan un Postgres real en Docker
   para cada corrida, no H2 ni mocks de DB.
 - **CI** (`.github/workflows/ci.yml`, GitHub Actions): en cada push/PR a `develop`

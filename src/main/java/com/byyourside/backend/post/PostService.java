@@ -1,5 +1,6 @@
 package com.byyourside.backend.post;
 
+import com.byyourside.backend.block.BlockPolicy;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.post.dto.CreatePostRequest;
 import com.byyourside.backend.post.dto.PostResponse;
@@ -34,6 +35,7 @@ public class PostService {
     private final FollowRepository followRepository;
     private final PostSupportRepository postSupportRepository;
     private final PostAccessPolicy postAccessPolicy;
+    private final BlockPolicy blockPolicy;
 
     @Transactional
     public PostResponse createPost(UserPrincipal principal, CreatePostRequest request) {
@@ -110,6 +112,19 @@ public class PostService {
         }
 
         boolean isOwner = principal.getId().equals(authorId);
+
+        // Fase 9.4: si hay un bloqueo entre viewer/target, no hay posts que
+        // ver -- pagina vacia (mismo 200 OK que un perfil PRIVATE sin
+        // acceso, nunca 404: no confirmamos ni negamos el bloqueo via status
+        // code aca). Un solo chequeo bilateral antes de tocar la query
+        // principal, en vez de embeber el OR de bloqueo en el JPQL de
+        // findVisiblePostsByAuthor -- mas eficiente para el caso de un solo
+        // autor (evita correr la query de posts directamente) y no requiere
+        // duplicar el join de UserBlock en esa query.
+        if (!isOwner && blockPolicy.isBlockedBetween(principal.getId(), authorId)) {
+            return Page.empty(pageable);
+        }
+
         boolean isFollower = isOwner
                 || followRepository.existsByFollowerIdAndFollowingId(principal.getId(), authorId);
 

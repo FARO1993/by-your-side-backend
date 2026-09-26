@@ -540,7 +540,8 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
     "followingCount": 5,
     "followedByCurrentUser": false,
     "profileVisibility": "PUBLIC",
-    "followState": "NONE"
+    "followState": "NONE",
+    "blockedByCurrentUser": false
   }
   ```
   **Cambio de contrato (Fase 9.3)**: `followState` es un campo nuevo (adición pura al
@@ -549,7 +550,12 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
   — nunca `true` para una solicitud `PENDING`); ambos campos nunca pueden contradecirse:
   `followedByCurrentUser == (followState == "FOLLOWING")` siempre, porque se derivan
   del mismo chequeo. Viendo el propio perfil, `followState` es siempre `"NONE"`.
-- **Errores**: `404 Not Found` si `userId` no existe.
+  **Cambio de contrato (Fase 9.4)**: `blockedByCurrentUser` es un campo nuevo (adición
+  pura al final) — `true` únicamente si **vos** bloqueaste a `userId`. **Nunca** existe
+  un campo equivalente para el sentido contrario (si `userId` te bloqueó a vos) — ver
+  el punto de bloqueo más abajo, ese caso ni siquiera llega a devolver `200`.
+- **Errores**: `404 Not Found` si `userId` no existe, **o si `userId` te bloqueó a vos**
+  (Fase 9.4 — ver más abajo, indistinguible a propósito del primer caso).
 - **Perfil `PRIVATE` — vista limitada, nunca 404** (Fase 9.1, semántica de acceso
   actualizada en Fase 9.3): si `profileVisibility` del `userId` consultado es `PRIVATE`
   y quien pregunta no es el dueño **ni un follower ya ACEPTADO**, la respuesta sigue
@@ -561,6 +567,14 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
   `followedByCurrentUser`, `profileVisibility`) se devuelven igual sin importar nada de
   esto — **ocultar contadores de seguidores es una decisión de producto separada, fuera
   de esta fase** (ver `BACKEND_ARCHITECTURE.md` § Privacidad, deuda explícita).
+- **Bloqueo (Fase 9.4) — asimétrico a propósito**:
+  - Si **`userId` te bloqueó a vos**: el perfil se trata como si no existiera —
+    `404 Not Found`, mismo mensaje genérico `"User not found"` que un usuario que nunca
+    existió. Nunca `403` (no confirma que el usuario existe pero está bloqueado).
+  - Si **vos bloqueaste a `userId`**: seguís viendo `200` con una vista **limitada**
+    (mismo tratamiento que un perfil `PRIVATE` del que no sos follower — `bio: null`,
+    `followState: "NONE"`) más `blockedByCurrentUser: true`, para que el frontend pueda
+    ofrecer la acción de desbloquear desde la propia tarjeta de perfil.
 - **`profileVisibility` en el propio perfil**: si `userId` es el propio usuario, esta
   ruta es equivalente a `GET /me` en cuanto a qué tan completo es el perfil — siempre se
   ve completo (mismo criterio "el dueño siempre ve todo" aplicado acá).
@@ -589,6 +603,10 @@ Posts de un usuario, respetando visibilidad según la relación con quien pregun
     - Si el autenticado sigue a `userId` → ve `PUBLIC` + `FOLLOWERS_ONLY`.
     - Si no → solo `PUBLIC`.
   - Siempre excluye posts con `status != VISIBLE`.
+  - **Bloqueo (Fase 9.4)**: si existe un bloqueo entre el autenticado y `userId` (en
+    cualquier dirección), **lista vacía** (`200 OK`, `content: []`) sin importar
+    `profileVisibility` — mismo tratamiento "sin contenido" que un perfil `PRIVATE` sin
+    acceso, nunca `404` (no confirma ni niega el bloqueo vía status code).
 - **Response 200**: `Page<PostResponse>` (ver forma de `PostResponse` en § Posts).
 - **Errores**: `404 Not Found` si `userId` no existe (esto sí es 404 real — el usuario en
   sí no existe, no es un tema de privacidad).
@@ -609,6 +627,9 @@ fuera de alcance de esta fase) — un usuario `PRIVATE` puede aparecer en el lis
   `followState` (Fase 9.3) es siempre `"NONE"` o `"REQUESTED"` en este listado en
   particular — nunca `"FOLLOWING"`, porque discover ya excluye a quienes se sigue
   efectivamente.
+  **Bloqueo (Fase 9.4)**: excluye bilateralmente a quien el autenticado bloqueó **y** a
+  quien lo bloqueó a él (2 consultas batch sobre toda la página, no una por fila) —
+  ninguna de las dos direcciones aparece nunca en este listado.
 
 ### `POST /api/users/me/avatar`
 Sube un avatar a Cloudinary y actualiza el perfil propio.
@@ -666,6 +687,10 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
   Fase 9.1/9.2): si sos follower efectivo de alguien, sus posts `PUBLIC`/
   `FOLLOWERS_ONLY` aparecen en tu feed aunque su perfil esté en `PRIVATE` — lo que
   importa es si la relación de follow es real, no el estado actual del perfil.
+- **Bloqueo (Fase 9.4)**: excluye bilateralmente, filtrado directo en la query del feed
+  (`NOT EXISTS` sobre bloqueos, no post-filtrado en memoria) — en la práctica esto ya es
+  redundante con la limpieza de `follows` que ocurre al bloquear (ver §12), pero se
+  mantiene como defensa en profundidad explícita en la query.
 
 ### `GET /api/posts/{postId}`
 - **Response 200**: `PostResponse`.
@@ -676,6 +701,10 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
   existencia de un post privado ajeno, ni que su autor tiene el perfil en privado). Un
   follower efectivo de un perfil `PRIVATE` ve sus posts `PUBLIC`/`FOLLOWERS_ONLY` con
   total normalidad — solo `PRIVATE` sigue siendo exclusivo del autor.
+  **Bloqueo (Fase 9.4)**: si existe un bloqueo entre el autenticado y el autor (en
+  cualquier dirección), `404 Not Found` — sin importar `visibility` del post, incluso si
+  es `PUBLIC` (ver `ProfileAccessPolicy` en `BACKEND_ARCHITECTURE.md`, el bloqueo se
+  chequea antes de mirar la visibilidad del post individual).
 
 ### `PATCH /api/posts/{postId}`
 Solo el autor puede editar. Campos opcionales (solo se aplican los no-null).
@@ -697,13 +726,17 @@ Da "apoyo" (equivalente a un like) al post. Dispara notificación `NEW_SUPPORT` 
 - **Errores**: `409 Conflict` si ya habías apoyado ese post. `404 Not Found` si el post no
   existe, o si existe pero no es visible para quien pregunta (mismo criterio de
   visibilidad que `GET /api/posts/{postId}`, incluyendo perfil `PRIVATE` del autor,
-  Fase 9.1) — no se puede apoyar un post que no se podría ver.
+  Fase 9.1, **y bloqueo bilateral, Fase 9.4**) — no se puede apoyar un post que no se
+  podría ver.
 
 ### `DELETE /api/posts/{postId}/support`
 Quita el apoyo previamente dado.
 - **Response 200**: `SupportSummaryResponse` (`supportedByCurrentUser: false`).
 - **Errores**: `404 Not Found` — post inexistente, o no habías apoyado ese post
   (mismo status code para ambos casos, mensaje distinto).
+- **Nota (Fase 9.4)**: **no** revalida bloqueo — igual que editar/borrar tu propio
+  comentario, quitar un apoyo que ya diste es gestionar algo tuyo, no crear una
+  interacción nueva. Sigue andando aunque exista un bloqueo con el autor del post.
 
 ---
 
@@ -722,15 +755,15 @@ Dispara notificación `NEW_COMMENT` al autor del post (salvo auto-comentario).
   ```
 - **Errores**: `404 Not Found` si el post no existe, o si existe pero no es visible para
   quien pregunta (Fase 9.1: mismo criterio de visibilidad que `GET
-  /api/posts/{postId}`, incluyendo perfil `PRIVATE` del autor) — no se puede comentar un
-  post que no se podría ver.
+  /api/posts/{postId}`, incluyendo perfil `PRIVATE` del autor y bloqueo bilateral, Fase
+  9.4) — no se puede comentar un post que no se podría ver.
 
 ### `GET /api/posts/{postId}/comments`
 **No pagina** — devuelve `List<CommentResponse>` completa, orden `createdAt ASC` (más
 viejo primero), solo `status = VISIBLE`.
 - **Errores**: `404 Not Found` si el post no existe, o si existe pero no es visible para
-  quien pregunta (mismo criterio que crear un comentario, arriba) — no se puede listar
-  comentarios de un post que no se podría ver.
+  quien pregunta (mismo criterio que crear un comentario, arriba, incluyendo bloqueo) —
+  no se puede listar comentarios de un post que no se podría ver.
 
 ### `PATCH /api/posts/{postId}/comments/{commentId}`
 Solo el autor del comentario puede editar (no hay excepción para moderador/admin acá).
@@ -738,11 +771,12 @@ Solo el autor del comentario puede editar (no hay excepción para moderador/admi
 - **Response 200**: `CommentResponse`.
 - **Errores**: `403 Forbidden` (no sos el autor), `404 Not Found` (comentario no existe,
   o existe pero no pertenece a `postId` — mismo mensaje "Comment not found" en ambos casos).
-- **Nota (Fase 9.1)**: esta ruta **no** vuelve a validar la visibilidad actual del post
-  — si sos el autor del comentario, podés editarlo/borrarlo aunque el post se haya
-  vuelto invisible para vos después de comentarlo (ej. el autor del post cambió su
-  perfil a `PRIVATE`). Gestionar tu propio comentario ya escrito es distinto de poder
-  ver contenido nuevo.
+- **Nota (Fase 9.1, extendida en 9.4)**: esta ruta **no** vuelve a validar la
+  visibilidad actual del post — si sos el autor del comentario, podés editarlo/borrarlo
+  aunque el post se haya vuelto invisible para vos después de comentarlo (ej. el autor
+  del post cambió su perfil a `PRIVATE`, **o** ahora hay un bloqueo entre ambos).
+  Gestionar tu propio comentario ya escrito es distinto de poder ver contenido nuevo —
+  un bloqueo impide **crear** interacciones nuevas, no gestionar las que ya hiciste.
 
 ### `DELETE /api/posts/{postId}/comments/{commentId}`
 Soft delete (`status = REMOVED`). Permitido para el autor **o** `MODERATOR`/`ADMIN`
@@ -779,10 +813,12 @@ Seguir a un usuario, **o solicitar seguirlo** si su perfil es `PRIVATE`.
   duplica** — devuelve `201` con los mismos `requestId`/`createdAt` de la solicitud ya
   existente. Distinto del caso "ya te sigue" (ver abajo), que sigue siendo `409`.
 - **Errores**: `400 Bad Request` (intentar seguirte a vos mismo), `404 Not Found`
-  (usuario objetivo no existe), `409 Conflict` (ya existe una relación `Follow`
-  **efectiva** — sin importar el `profileVisibility` actual del objetivo; si vos ya lo
-  seguías de antes y ahora puso su perfil en privado, seguís siguiendolo igual, sin
-  necesidad de una solicitud nueva).
+  (usuario objetivo no existe, **o existe un bloqueo entre ambos en cualquier
+  dirección, Fase 9.4** — mismo mensaje genérico "Target user not found", nunca `403`,
+  para no confirmar que el usuario existe pero está bloqueado), `409 Conflict` (ya existe
+  una relación `Follow` **efectiva** — sin importar el `profileVisibility` actual del
+  objetivo; si vos ya lo seguías de antes y ahora puso su perfil en privado, seguís
+  siguiendolo igual, sin necesidad de una solicitud nueva).
 
 ### `DELETE /api/follows/{userId}`
 Deja de seguir a alguien que **ya seguís efectivamente** (relación `Follow` real).
@@ -843,7 +879,11 @@ Solo el **target** de la solicitud puede aceptarla.
   `FOLLOW_REQUEST_ACCEPTED` al requester.
 - **Errores**: `404 Not Found` (solicitud inexistente), `403 Forbidden` (no sos el
   target), `409 Conflict` (ya no está `PENDING` — ya fue aceptada/rechazada/cancelada,
-  o una request concurrente ya la resolvió primero).
+  o una request concurrente ya la resolvió primero — **incluyendo el caso en que alguno
+  de los dos bloqueó al otro después de enviarla, Fase 9.4**: bloquear cancela
+  automáticamente cualquier solicitud `PENDING` entre ambos, así que intentar aceptarla
+  después da el mismo `409` que cualquier otra solicitud ya resuelta, sin un mensaje
+  distinto que revele el bloqueo).
 
 ### `POST /api/follow-requests/{requestId}/reject`
 Solo el **target**.
@@ -899,6 +939,9 @@ sí reemplaza el anterior). El feed solo muestra el más reciente no vencido por
 ### `GET /api/statuses/feed`
 **No pagina** — `List<StatusResponse>`. Un único status "actual" (el más reciente no
 vencido) por cada usuario que sigo + el propio, orden `createdAt DESC`.
+- **Bloqueo (Fase 9.4)**: excluye bilateralmente, filtrado en la query (mismo criterio
+  de defensa en profundidad que el feed de posts — en la práctica ya es redundante con
+  la limpieza de `follows` al bloquear, ver §12).
 
 ### `POST /api/statuses/{statusId}/react`
 Reacciona a un status. Si ya habías reaccionado, **reemplaza** el tipo de reacción
@@ -907,7 +950,11 @@ Notifica `NEW_STATUS_REACTION` al dueño del status solo si es tu **primera** re
 ese status (cambiar el tipo de una reacción existente no vuelve a notificar).
 - **Body** (`ReactToStatusRequest`): `{ "type": "WITH_YOU | WANT_TO_TALK | HERE_READING | NOT_ALONE" }`
 - **Response 200**: `StatusResponse` actualizado.
-- **Errores**: `404 Not Found` si el status no existe.
+- **Errores**: `404 Not Found` si el status no existe, **o si existe un bloqueo entre el
+  autenticado y el dueño del status en cualquier dirección (Fase 9.4)** — mismo mensaje
+  genérico que un status inexistente. Este endpoint es una interacción directa
+  usuario-a-usuario que no pasa por `PostAccessPolicy` (los estados son un dominio
+  separado de los posts), así que necesitó su propio chequeo de bloqueo explícito.
 
 ### `DELETE /api/statuses/{statusId}/react`
 Quita tu reacción.
@@ -946,6 +993,9 @@ Lista hasta 10 personas disponibles ahora mismo con ese `intent`, en **orden ale
 - **Query params**: `intent` (obligatorio, uno de `CompanionIntent`).
 - **Response 200**: **No pagina** — `List<AvailabilityResponse>` (máx. 10 items, límite
   fijo en el backend, no configurable desde el cliente).
+- **Bloqueo (Fase 9.4)**: excluye bilateralmente en la query nativa (`NOT EXISTS` sobre
+  bloqueos) — ni quien el autenticado bloqueó ni quien lo bloqueó a él pueden aparecer,
+  en ninguna dirección.
 
 **Relación con chat**: el modo compañía es la única forma de iniciar una conversación
 con alguien que no seguís ni te sigue — ver § 8 y reglas de `POST /api/conversations/{userId}`.
@@ -962,8 +1012,17 @@ Obtiene la conversación existente con `userId`, o la crea si no existe.
   acompañar). Si ninguna de las tres se cumple → `403 Forbidden`. La disponibilidad nunca
   habilita el sentido inverso (que alguien le escriba a quien está disponible sí, pero no
   al revés sin ese consentimiento).
+- **Bloqueo (Fase 9.4)**: si existe un bloqueo entre ambos en cualquier dirección, tanto
+  la conexión por follow como la disponibilidad de compañía se anulan — se trata
+  exactamente igual que "no conectados, no disponible" (mismo `403` genérico de arriba,
+  sin un mensaje distinto que revele el bloqueo). Esto se re-evalúa en **cada llamada**
+  a este endpoint (no solo al crear la conversación por primera vez — mismo criterio que
+  ya existía para follow/disponibilidad antes de esta fase), así que también cubre el
+  caso de "ya teníamos una conversación, pero ahora uno de los dos bloqueó al otro": este
+  endpoint específico deja de funcionar para ese par, aunque la conversación siga
+  existiendo en la base y siga siendo legible (ver abajo).
 - **Errores**: `400 Bad Request` (intentar chatear con vos mismo), `404 Not Found`
-  (usuario objetivo no existe), `403 Forbidden` (regla de arriba).
+  (usuario objetivo no existe), `403 Forbidden` (regla de arriba, incluyendo bloqueo).
 - **Response 200** (`ConversationResponse`):
   ```json
   {
@@ -981,6 +1040,12 @@ Obtiene la conversación existente con `userId`, o la crea si no existe.
 **No pagina** — `List<ConversationResponse>` de todas las conversaciones del usuario,
 orden `lastMessageAt DESC` (las que nunca tuvieron mensajes van al final, `NULLS LAST`).
 Acá `unreadCount` sí refleja el conteo real de mensajes no leídos enviados por la otra persona.
+- **Bloqueo (Fase 9.4)**: **no** filtra nada — una conversación con una persona
+  bloqueada (en cualquier dirección) sigue apareciendo en este listado con total
+  normalidad. Decisión explícita: el historial de chat se preserva sin excepción (ver
+  §12), y ocultar la conversación de este listado la haría inalcanzable desde el
+  frontend sin borrar nada — peor que simplemente dejarla visible en modo solo lectura
+  (ver `POST .../messages` abajo para el bloqueo real de mensajes nuevos).
 
 ### `GET /api/conversations/{conversationId}/messages`
 - **Query params**: `page` (default `0`), `size` (default **`50`**, distinto al default
@@ -998,13 +1063,24 @@ Acá `unreadCount` sí refleja el conteo real de mensajes no leídos enviados po
   }
   ```
 - **Errores**: `403 Forbidden` si no sos parte de la conversación. `404 Not Found` si no existe.
+- **Bloqueo (Fase 9.4)**: **no** se revalida acá — el historial completo (mensajes de
+  antes **y** de después de que exista un bloqueo, si los hubiera) sigue siendo legible
+  por ambas partes sin ninguna restricción. Un bloqueo nunca borra ni oculta mensajes ya
+  enviados.
 
 ### `POST /api/conversations/{conversationId}/messages`
 Envía un mensaje. Además de persistirlo, lo empuja por WebSocket al destinatario (ver
 `WEBSOCKET_CONTRACT.md`) — el POST es la única forma de enviar (no hay envío vía STOMP).
 - **Body** (`SendMessageRequest`): `{ "content": "máx 2000 chars, obligatorio" }`
 - **Response 201**: `MessageResponse` recién creado.
-- **Errores**: `403 Forbidden` (no sos parte de la conversación), `404 Not Found`.
+- **Errores**: `403 Forbidden` (no sos parte de la conversación, **o existe un bloqueo
+  entre ambos en cualquier dirección, Fase 9.4** — mismo status code, mensaje distinto,
+  nunca revela cuál de los dos motivos aplicó), `404 Not Found`.
+- **WebSocket (Fase 9.4)**: el servidor STOMP es exclusivamente push (`convertAndSendToUser`
+  hacia `/queue/messages`) — no existe ningún `@MessageMapping` que acepte mensajes
+  entrantes del cliente por WebSocket, así que este `POST` es el único punto de entrada
+  para enviar un mensaje y el único lugar donde hace falta el chequeo de bloqueo. No hay
+  forma de bypassear este gate por WS.
 
 ---
 
@@ -1012,6 +1088,15 @@ Envía un mensaje. Además de persistirlo, lo empuja por WebSocket al destinatar
 
 Las notificaciones se generan internamente desde otros módulos (follow, comment, support,
 status reaction) — no hay endpoint para crearlas manualmente.
+
+- **Bloqueo (Fase 9.4)**: una guarda centralizada en `NotificationService.notify()`
+  suprime cualquier notificación **nueva** entre dos usuarios con un bloqueo activo (en
+  cualquier dirección) — en la práctica esto ya es redundante con que la acción que
+  dispararía la notificación (follow, comentario, apoyo, reacción de estado) ya se
+  rechaza antes de llegar a `notify()`, pero queda como defensa en profundidad centralizada
+  en un solo lugar en vez de duplicada en cada caller. **No afecta notificaciones ya
+  existentes** — bloquear a alguien nunca borra notificaciones históricas generadas
+  antes del bloqueo, sólo evita que se generen nuevas.
 
 ### `GET /api/notifications`
 - **Query params**: `page` (default `0`), `size` (default `20`).
@@ -1103,6 +1188,85 @@ Cambia el rol de un usuario.
   endpoint admin implementado además de la cola de reportes (§10). No hay endpoints para
   suspender/desactivar cuentas (`UserStatus.SUSPENDED`/`DEACTIVATED` existen en el enum
   y afectan login, pero nada en la API permite setearlos actualmente).
+
+---
+
+## 12. User Blocking (`/api/users/{userId}/block`, `/api/users/me/blocked`) — requiere autenticación
+
+Bloqueo de usuario a usuario (Fase 9.4). La tabla `user_blocks` es **direccional**
+(`blocker_id`, `blocked_id`), pero el **acceso** en toda la API se trata como
+**bilateral**: un bloqueo de cualquiera de los dos lados corta la relación completa para
+ambos (ver `BlockPolicy.isBlockedBetween` en `BACKEND_ARCHITECTURE.md`). El `blockerId`
+**nunca** se acepta desde el body — siempre es el usuario del JWT, y `userId` en el path
+es siempre el **target**.
+
+### `POST /api/users/{userId}/block`
+Bloquea a `userId`. **Idempotente** — bloquear a alguien ya bloqueado no falla (`204`
+igual, sin crear una segunda fila).
+- **Response**: `204 No Content`.
+- **Errores**: `400 Bad Request` (intentar bloquearte a vos mismo), `404 Not Found`
+  (`userId` no existe).
+- **Efecto secundario transaccional** (todo en una sola operación, ver
+  `BlockService.blockUser`):
+  - Borra cualquier fila `Follow` real en **ambas** direcciones (`blocker→target` y
+    `target→blocker`) — no importa quién seguía a quién.
+  - Cancela (`status = CANCELLED`, no borra) cualquier `FollowRequest` `PENDING` en
+    ambas direcciones. **No toca** filas históricas `ACCEPTED`/`REJECTED` — quedan
+    intactas como registro de que existieron.
+  - **Después de bloquear**: no se puede crear un `Follow` ni una `FollowRequest` nueva
+    entre ambos en ninguna dirección (`POST /api/follows/{userId}` responde `404`), no
+    se puede aceptar una solicitud vieja que quedó cancelada por el bloqueo, no se puede
+    iniciar una conversación nueva ni enviar mensajes nuevos, no se ve el perfil/posts
+    completo del otro, no aparece en el feed/discover/disponibilidad del otro.
+
+### `DELETE /api/users/{userId}/block`
+Desbloquea a `userId`. Solo quien bloqueó puede desbloquear (el path/principal son
+siempre el mismo `blockerId` — no hay forma de desbloquear "en nombre" de otro).
+**Idempotente** — desbloquear a alguien no bloqueado no falla (`204` igual).
+- **Response**: `204 No Content`.
+- **Decisión explícita — desbloquear es *solo* borrar la fila**: no recrea el `Follow`
+  que existía antes de bloquear, no reactiva la `FollowRequest` que quedó `CANCELLED`,
+  no restaura conversaciones ni disponibilidad a ningún estado previo. El estado
+  "post-desbloqueo" es el mismo que el de dos desconocidos que nunca se siguieron.
+
+### `GET /api/users/me/blocked`
+Lista de usuarios que el **autenticado** bloqueó — **nunca** quién lo bloqueó a él (no
+existe ningún endpoint para consultar eso, ver más abajo).
+- **Query params**: `page` (default `0`), `size` (default `20`).
+- **Response 200**: `Page<BlockedUserResponse>`:
+  ```json
+  { "userId": "uuid", "username": "...", "displayName": "...", "avatarUrl": "...", "blockedAt": "..." }
+  ```
+  DTO mínimo a propósito — **nunca incluye `email`**, mismo criterio que `UserSummary`.
+
+### Decisiones de diseño explícitas (para el frontend y para no repetir el debate)
+
+- **`blockedByCurrentUser` sí, `blockingCurrentUser` no**: `GET /api/users/{userId}`
+  expone si **vos** bloqueaste al `userId` consultado, pero **jamás** expone si
+  `userId` te bloqueó a **vos** — ese caso simplemente resulta en `404 Not Found` en
+  ese mismo endpoint (ver §2). No hay ninguna otra vía en la API para que un usuario
+  averigüe si otro lo bloqueó.
+- **Perfil bloqueado → 404, no 403**: igual que un post invisible, nunca se confirma
+  "existe pero no podés verlo" — se trata como si no existiera. Esto es una extensión
+  puntual del criterio 404-no-403 ya usado en toda la API para contenido oculto; **no**
+  reemplaza el criterio ya existente de que un perfil `PRIVATE` sin bloqueo de por medio
+  sigue devolviendo `200` con vista limitada (ver §2) — son dos ejes distintos
+  (visibilidad vs. bloqueo) que conviven sin contradecirse.
+- **Chat: historial se preserva siempre, nunca se borra**: bloquear NO borra
+  conversaciones ni mensajes. Solo impide crear una conversación nueva o enviar
+  mensajes nuevos (ver §8). El frontend puede seguir mostrando la conversación bloqueada
+  en la lista y su historial completo — solo debe deshabilitar el campo de "escribir un
+  mensaje nuevo" si la creación/envío devuelve `403`.
+- **Moderación/reportes no se ven afectados**: bloquear no impide reportar a alguien
+  (§10) ni le da ni le quita capacidades a moderadores/admins — un moderador puede
+  seguir borrando un post aunque su autor lo haya bloqueado a él.
+
+### Fuera de alcance de esta fase (explícitamente no implementado)
+
+Silenciar sin bloquear ("mute"), ocultar un post puntual, ocultar a un usuario sin
+bloquearlo, reporte automático al bloquear, motivo de bloqueo, bloqueo temporizado,
+"amigos cercanos"/audiencias personalizadas/círculos, bloqueo por dispositivo, y
+cualquier mecanismo de anti-abuso/rate-limiting más allá de lo que ya existía.
 
 ---
 

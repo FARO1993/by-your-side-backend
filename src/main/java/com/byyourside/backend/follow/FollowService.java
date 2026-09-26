@@ -1,5 +1,6 @@
 package com.byyourside.backend.follow;
 
+import com.byyourside.backend.block.BlockPolicy;
 import com.byyourside.backend.follow.dto.FollowResponse;
 import com.byyourside.backend.notification.NotificationService;
 import com.byyourside.backend.notification.NotificationType;
@@ -28,6 +29,7 @@ public class FollowService {
     private final FollowRequestRepository followRequestRepository;
     private final UserRepository userRepository;
     private final NotificationService notificationService;
+    private final BlockPolicy blockPolicy;
 
     // Fase 9.3: el resultado depende del profileVisibility del target.
     // PUBLIC -> Follow inmediato (comportamiento historico, sin cambios).
@@ -44,6 +46,17 @@ public class FollowService {
 
         User target = userRepository.findById(targetUserId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Target user not found"));
+
+        // Fase 9.4: si hay un bloqueo (en cualquier direccion) entre ambos,
+        // el target se trata como inexistente -- mismo 404 generico que un
+        // usuario que nunca existio, ni siquiera un 403 que confirmaria que
+        // el usuario existe pero esta bloqueado. No hay forma de "re-pedir"
+        // ni de que el otro lado acepte una solicitud vieja mientras el
+        // bloqueo siga activo (ver BlockService.blockUser: cancela cualquier
+        // FollowRequest PENDING en el momento de bloquear).
+        if (blockPolicy.isBlockedBetween(follower.getId(), target.getId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Target user not found");
+        }
 
         // Ya soy follower efectivo: idempotente/coherente sin importar el
         // profileVisibility actual del target (pudo haberse hecho PUBLIC->

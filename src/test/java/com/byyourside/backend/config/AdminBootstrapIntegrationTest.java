@@ -1,5 +1,6 @@
 package com.byyourside.backend.config;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -33,10 +34,14 @@ class AdminBootstrapIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @BeforeEach
     void setUp() {
+        userBlockRepository.deleteAll();
         userRepository.deleteAll();
     }
 

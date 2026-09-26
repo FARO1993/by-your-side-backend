@@ -312,10 +312,64 @@ respuesta del propio follow): `"NONE"` | `"REQUESTED"` | `"FOLLOWING"`.
   (reemplaza la limitación de Fase 9.1/9.2). Comentar/reaccionar sobre un post que dejó
   de ser visible (ej. te sacaron de sus followers) empieza a fallar con `404` —
   tratarlo igual que "post no encontrado", sin un mensaje especial.
-- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): bloqueo de
-  usuarios, silenciar/mute, listas o círculos de audiencia personalizados, ocultar
-  contadores de seguidores, controles de privacidad de mensajería, expiración
-  automática de solicitudes.
+- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): silenciar/
+  mute, listas o círculos de audiencia personalizados, ocultar contadores de seguidores,
+  controles de privacidad de mensajería, expiración automática de solicitudes. (Bloqueo
+  de usuarios dejó de estar acá — ver la sección siguiente.)
+
+## Bloqueo de usuarios (Fase 9.4)
+
+Nuevo endpoint por par de usuarios: `POST/DELETE /api/users/{userId}/block` +
+`GET /api/users/me/blocked`. Ver `API_CONTRACT.md` §12 para el detalle completo de
+request/response/errores — acá solo la guía de UX.
+
+- **Botón de bloqueo/desbloqueo en el perfil de otro usuario**: usar
+  `blockedByCurrentUser` (nuevo campo en `PublicUserProfileResponse`) para decidir cuál
+  mostrar — `true` → botón "Desbloquear" (`DELETE .../block`), `false`/ausente → botón
+  "Bloquear" (`POST .../block`). **No existe** ningún campo que diga "este usuario me
+  bloqueó a mí" — si eso pasó, el perfil directamente responde `404` como si la cuenta no
+  existiera (ver abajo), así que no hace falta ni es posible distinguir ese caso en la UI.
+- **Pantalla "Usuarios bloqueados"** (nueva, típicamente colgada de una sección de
+  privacidad/ajustes): `GET /api/users/me/blocked`, paginado, con
+  `{ userId, username, displayName, avatarUrl, blockedAt }` — sin email. Cada fila
+  debería ofrecer "Desbloquear" (`DELETE /api/users/{userId}/block`).
+- **Qué pasa al bloquear a alguien** (todo esto ocurre automáticamente en el backend, el
+  frontend solo necesita reflejarlo la próxima vez que pida esos datos, no hace falta
+  lógica especial del lado del cliente):
+  - Deja de aparecer en tu feed, en discover y en los listados de disponibilidad
+    ("modo compañía"), y vos dejás de aparecer en los suyos.
+  - Si se seguían mutuamente o en un solo sentido, esa relación de follow se corta (en
+    ambos sentidos si aplicaba). Cualquier solicitud de follow pendiente entre ambos
+    queda cancelada.
+  - Ya no es posible seguirse, ni enviar/aceptar una solicitud de follow, entre ambos,
+    mientras el bloqueo siga activo.
+  - Su perfil pasa a responder `404` para vos si fue **él** quien te bloqueó a **vos**
+    (ver el punto siguiente); si fuiste **vos** quien lo bloqueó a **él**, seguís viendo
+    su tarjeta de perfil (limitada, como un perfil privado del que no sos follower), con
+    `blockedByCurrentUser: true`.
+  - Ya no podés ver sus posts (ni comentar ni apoyar los suyos), ni él los tuyos.
+- **⚠️ Perfil bloqueado → `404`, distinto del caso "perfil privado" ya documentado
+  arriba**: la sección de Privacidad (Fase 9.1/9.2/9.3) dice que `GET
+  /api/users/{userId}` **nunca** devuelve `404` solo por privacidad — eso sigue siendo
+  cierto para perfiles `PRIVATE` sin bloqueo de por medio. Pero si el otro usuario **te
+  bloqueó a vos**, ese mismo endpoint sí devuelve `404` — indistinguible de una cuenta
+  eliminada/inexistente. El frontend no puede (ni debe intentar) diferenciar "no existe"
+  de "me bloqueó" en este caso — tratarlo como cualquier otro 404 de perfil (ej. volver
+  al listado anterior, mostrar "usuario no encontrado").
+- **Chat: el historial NUNCA se borra al bloquear** — esto es importante para no
+  implementar algo que el backend no hace. Una conversación con alguien que bloqueaste
+  (o que te bloqueó) sigue apareciendo en `GET /api/conversations` y su historial
+  completo sigue siendo legible vía `GET /api/conversations/{id}/messages`, sin ninguna
+  restricción. Lo único que cambia es que `POST /api/conversations/{userId}` (abrir/crear
+  conversación) y `POST .../messages` (enviar un mensaje nuevo) empiezan a devolver
+  `403` — el frontend debe deshabilitar el campo de "escribir un mensaje nuevo" en esa
+  conversación específica cuando el envío falle con `403` (no hace falta chequear el
+  estado de bloqueo por adelantado; el propio intento de envío ya lo revela), pero
+  **no** debe ocultar ni la conversación ni los mensajes ya existentes.
+- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): mute
+  (silenciar sin bloquear), ocultar un post puntual sin bloquear a su autor, reporte
+  automático al bloquear, motivo de bloqueo visible, bloqueo temporizado, "amigos
+  cercanos"/audiencias personalizadas, bloqueo por dispositivo.
 
 ## Endpoints disponibles
 
@@ -330,6 +384,7 @@ Resumen de superficie por dominio:
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |
 | Follows | `/api/follows` | seguir/dejar de seguir (inmediato o solicitud según privacidad), listas, eliminar seguidor |
 | Follow Requests | `/api/follow-requests` | aceptar/rechazar/cancelar solicitudes, incoming/outgoing |
+| Blocking | `/api/users/{userId}/block`, `/api/users/me/blocked` | bloquear/desbloquear, lista de bloqueados propios |
 | Statuses | `/api/statuses` | "estado de ánimo" efímero (24h) + reacciones |
 | Availability | `/api/availability` | "modo compañía" efímero (6h) |
 | Chat | `/api/conversations` | conversaciones 1:1, mensajes paginados |
@@ -359,8 +414,9 @@ Resumen de superficie por dominio:
   **Excepción deliberada**: el perfil de un usuario (`GET /api/users/{userId}`) y sus
   posts (`GET /api/users/{userId}/posts`) **nunca** devuelven 404 solo por privacidad —
   responden `200` con datos limitados o una lista vacía, respectivamente (ver §
-  Privacidad de perfil arriba). El 404 en esos dos endpoints significa exclusivamente
-  "el usuario no existe".
+  Privacidad de perfil arriba). El 404 en esos dos endpoints significa "el usuario no
+  existe" **o** "ese usuario te bloqueó a vos" (Fase 9.4, ver § Bloqueo de usuarios) —
+  ambos casos indistinguibles a propósito.
 - **PATCH parciales**: en `PATCH /api/users/me`, `PATCH /api/posts/{id}` los campos
   omitidos (`null`) se interpretan como "no tocar", no como "vaciar". No hay forma de
   vaciar `bio`/`displayName` enviando `null` explícito.

@@ -1,5 +1,6 @@
 package com.byyourside.backend.auth;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.email.EmailDeliveryException;
 import com.byyourside.backend.email.EmailService;
 import com.byyourside.backend.user.User;
@@ -52,6 +53,9 @@ class EmailVerificationIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -75,6 +79,7 @@ class EmailVerificationIntegrationTest {
     void cleanUp() {
         tokenRepository.deleteAll();
         authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
         userRepository.deleteAll();
     }
 

@@ -21,11 +21,21 @@ public interface AvailabilityRepository extends JpaRepository<Availability, UUID
     // pedir orden aleatorio en JPQL, asi que esta query es nativa a
     // proposito. El orden aleatorio es una decision de diseño: nunca
     // ordenar por popularidad/apoyo recibido en el modo compañia.
+    //
+    // Fase 9.4: exclusion bilateral de bloqueo directo en la query (no hay
+    // forma de reusar BlockPolicy aca sin volver esto N+1 -- una consulta
+    // por candidato). El NOT EXISTS cubre ambas direcciones con un solo OR,
+    // igual que BlockPolicy.isBlockedBetween.
     @Query(value = """
             SELECT * FROM availabilities a
             WHERE a.intent = :intent
             AND a.expires_at > :now
             AND a.user_id != :excludeUserId
+            AND NOT EXISTS (
+                SELECT 1 FROM user_blocks b
+                WHERE (b.blocker_id = :excludeUserId AND b.blocked_id = a.user_id)
+                OR (b.blocker_id = a.user_id AND b.blocked_id = :excludeUserId)
+            )
             ORDER BY RANDOM()
             LIMIT :limit
             """, nativeQuery = true)

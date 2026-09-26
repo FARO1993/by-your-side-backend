@@ -23,6 +23,11 @@ import java.util.UUID;
 // romper para quien ya integraba contra Fase 9.1/9.2. Nunca pueden
 // contradecirse: `followedByCurrentUser == (followState == "FOLLOWING")`
 // siempre, porque ambos se derivan del mismo chequeo.
+//
+// `blockedByCurrentUser` (Fase 9.4): true si YO bloquee a este usuario. A
+// proposito NUNCA se expone si el TARGET me bloqueo a mi (eso simplemente
+// resulta en un 404 "User not found" -- ver UserService.getPublicProfile --
+// indistinguible de un usuario inexistente, para no revelar la relacion).
 public record PublicUserProfileResponse(
         UUID id,
         String username,
@@ -34,6 +39,7 @@ public record PublicUserProfileResponse(
         long followingCount,
         boolean followedByCurrentUser,
         String profileVisibility,
-        String followState
+        String followState,
+        boolean blockedByCurrentUser
 ) {
 }

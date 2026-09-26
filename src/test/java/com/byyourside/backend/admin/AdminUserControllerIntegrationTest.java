@@ -1,5 +1,6 @@
 package com.byyourside.backend.admin;
 
+import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.user.User;
@@ -42,6 +43,9 @@ class AdminUserControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -62,6 +66,7 @@ class AdminUserControllerIntegrationTest {
     void setUp() throws Exception {
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
         userRepository.deleteAll();
 
         admin = registerUser("admin", "admin@example.com", UserRole.ADMIN);
