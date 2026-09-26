@@ -64,6 +64,7 @@ observable) no requieren tocar esta documentación.
 |---|---|---|
 | `UserRole` | `USER`, `MODERATOR`, `ADMIN` | `UserResponse.role`, admin role update |
 | `UserStatus` | `ACTIVE`, `SUSPENDED`, `DEACTIVATED` | Interno (controla login vía `UserDetails.isEnabled/isAccountNonLocked`); no expuesto directamente en ningún DTO de respuesta |
+| `ProfileVisibility` (Fase 9.1) | `PUBLIC`, `PRIVATE` | `UserResponse`/`PublicUserProfileResponse`/`DiscoverUserResponse.profileVisibility`, `PATCH /api/users/me` |
 | `PostVisibility` | `PUBLIC`, `FOLLOWERS_ONLY`, `PRIVATE` | Crear/editar/leer posts |
 | `PostStatus` | `VISIBLE`, `FLAGGED`, `REMOVED` | Interno. **`FLAGGED` existe en el enum pero ningún código lo asigna actualmente** (ver `FRONTEND_HANDOFF.md` § gaps). No se expone en `PostResponse`. |
 | `CommentStatus` | `VISIBLE`, `FLAGGED`, `REMOVED` | Interno, mismo caso que `PostStatus.FLAGGED` (no asignado nunca) |
@@ -489,7 +490,8 @@ Perfil completo del usuario autenticado, incluye email.
     "role": "USER",
     "createdAt": "2026-01-01T00:00:00Z",
     "emailVerified": false,
-    "emailVerifiedAt": "2026-01-02T09:00:00Z o null"
+    "emailVerifiedAt": "2026-01-02T09:00:00Z o null",
+    "profileVisibility": "PUBLIC"
   }
   ```
   **Cambio de contrato (Fase 1.1)**: `emailVerified` y `emailVerifiedAt` son campos
@@ -499,6 +501,9 @@ Perfil completo del usuario autenticado, incluye email.
   tienen `emailVerified: true` (ver `BACKEND_ARCHITECTURE.md` § Flyway/compatibilidad),
   con `emailVerifiedAt` igual a su `createdAt` original (fecha aproximada, no una
   verificación real que haya ocurrido).
+  **Cambio de contrato (Fase 9.1)**: `profileVisibility` es un campo nuevo (adición pura
+  al final), `"PUBLIC"` o `"PRIVATE"`. En `/me` siempre viaja el valor real, sin importar
+  quién pregunta (es siempre el propio usuario).
 
 ### `PATCH /api/users/me`
 Actualiza el perfil propio. Todos los campos son opcionales (solo se aplican los
@@ -506,14 +511,21 @@ Actualiza el perfil propio. Todos los campos son opcionales (solo se aplican los
 explícito, porque `null` se interpreta como "no tocar").
 - **Body** (`UpdateProfileRequest`):
   ```json
-  { "displayName": "máx 100 chars", "bio": "máx 500 chars", "avatarUrl": "string" }
+  { "displayName": "máx 100 chars", "bio": "máx 500 chars", "avatarUrl": "string", "profileVisibility": "PUBLIC | PRIVATE" }
   ```
+  - `profileVisibility` (Fase 9.1): opcional, mismo criterio "`null` = no tocar" que el
+    resto de los campos de este DTO. Un valor que no sea `PUBLIC`/`PRIVATE` responde
+    `400 Bad Request` (body malformado — mismo manejo genérico que cualquier enum
+    inválido en esta API, no un caso especial).
 - **Response 200**: `UserResponse` (igual forma que `GET /me`).
 - **Nota**: `avatarUrl` puede setearse aquí como URL arbitraria; el endpoint dedicado
   de upload (abajo) es la vía recomendada para subir un archivo real vía Cloudinary.
+- **Identidad**: como todo `/me`, opera exclusivamente sobre el usuario del JWT — no hay
+  (ni puede haber) forma de cambiar la privacidad de otra cuenta a través de este
+  endpoint.
 
 ### `GET /api/users/{userId}`
-Perfil público de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
+Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
 - **Path params**: `userId` (UUID).
 - **Response 200** (`PublicUserProfileResponse`):
   ```json
@@ -521,36 +533,66 @@ Perfil público de **otro** usuario (o el propio, funciona igual). Nunca incluye
     "id": "uuid",
     "username": "juanperez",
     "displayName": "Juan Pérez",
-    "bio": "...",
+    "bio": "... o null",
     "avatarUrl": "...",
     "createdAt": "2026-01-01T00:00:00Z",
     "followersCount": 12,
     "followingCount": 5,
-    "followedByCurrentUser": false
+    "followedByCurrentUser": false,
+    "profileVisibility": "PUBLIC"
   }
   ```
 - **Errores**: `404 Not Found` si `userId` no existe.
+- **Perfil `PRIVATE` (Fase 9.1) — vista limitada, nunca 404**: si `profileVisibility` del
+  `userId` consultado es `PRIVATE` y quien pregunta no es el propio dueño, la respuesta
+  sigue siendo `200` (el perfil **existe** y eso es visible) pero `bio` viaja en `null`.
+  El resto de los campos (`username`, `displayName`, `avatarUrl`, `followersCount`,
+  `followingCount`, `followedByCurrentUser`, `profileVisibility`) se devuelven igual que
+  con un perfil `PUBLIC` — **ocultar contadores de seguidores es una decisión de
+  producto separada, fuera de esta fase** (ver `BACKEND_ARCHITECTURE.md` § Privacidad,
+  deuda explícita). El frontend debe usar `profileVisibility: "PRIVATE"` +
+  `bio: null` para decidir cuándo mostrar el aviso "Este perfil es privado" en vez del
+  contenido completo — ver `FRONTEND_HANDOFF.md`.
+- **`profileVisibility` en el propio perfil**: si `userId` es el propio usuario, esta
+  ruta es equivalente a `GET /me` en cuanto a qué tan completo es el perfil — siempre se
+  ve completo (mismo criterio "el dueño siempre ve todo" aplicado acá).
+- **Seguir/dejar de seguir sigue funcionando igual sobre un perfil `PRIVATE`**: no hay
+  aprobación de seguidores en esta fase (ver más abajo) — `followedByCurrentUser` refleja
+  el estado real inmediatamente después de `POST /api/follows/{userId}`.
 
 ### `GET /api/users/{userId}/posts`
 Posts de un usuario, respetando visibilidad según la relación con quien pregunta.
 - **Query params**: `page` (default `0`), `size` (default `20`).
 - **Reglas de visibilidad** (evaluadas server-side, no confiar en el frontend):
-  - Si `userId` == usuario autenticado → ve todos sus propios posts (incluye `PRIVATE`).
-  - Si el autenticado sigue a `userId` → ve `PUBLIC` + `FOLLOWERS_ONLY`.
-  - Si no → solo `PUBLIC`.
+  - Si `userId` == usuario autenticado → ve todos sus propios posts, cualquiera sea su
+    `visibility` (incluye `PRIVATE`), **sin importar la `profileVisibility` propia**.
+  - Si `profileVisibility` de `userId` es `PRIVATE` y el que pregunta no es el dueño →
+    **lista vacía** (`200 OK`, `content: []`, nunca `404` — la existencia del usuario ya
+    se confirmó al resolver `userId`; ver `GET /api/users/{userId}` arriba para el mismo
+    criterio). Esto aplica **aunque el que pregunta sea follower** — un perfil `PRIVATE`
+    oculta sus posts a cualquier tercero en esta fase, seguirlo no cambia nada (ver
+    `BACKEND_ARCHITECTURE.md` § Privacidad).
+  - Si `profileVisibility` de `userId` es `PUBLIC`:
+    - Si el autenticado sigue a `userId` → ve `PUBLIC` + `FOLLOWERS_ONLY`.
+    - Si no → solo `PUBLIC`.
   - Siempre excluye posts con `status != VISIBLE`.
 - **Response 200**: `Page<PostResponse>` (ver forma de `PostResponse` en § Posts).
-- **Errores**: `404 Not Found` si `userId` no existe.
+- **Errores**: `404 Not Found` si `userId` no existe (esto sí es 404 real — el usuario en
+  sí no existe, no es un tema de privacidad).
 
 ### `GET /api/users/discover`
 Lista de usuarios que el autenticado **no sigue todavía** (para descubrir gente nueva).
 No hay filtro de búsqueda por texto — es un listado paginado sin criterio de relevancia
-explícito más allá del orden default de la tabla.
+explícito más allá del orden default de la tabla. **No filtra por `profileVisibility`**
+(ocultar cuentas privadas del discover es "discovery privacy avanzada", explícitamente
+fuera de alcance de esta fase) — un usuario `PRIVATE` puede aparecer en el listado.
 - **Query params**: `page` (default `0`), `size` (default `20`).
 - **Response 200**: `Page<DiscoverUserResponse>`:
   ```json
-  { "id": "uuid", "username": "...", "displayName": "...", "bio": "...", "avatarUrl": "..." }
+  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC" }
   ```
+  `bio` viaja en `null` cuando `profileVisibility` es `PRIVATE` — mismo criterio que
+  `GET /api/users/{userId}`, para no exponer el mismo dato por una ruta lateral.
 
 ### `POST /api/users/me/avatar`
 Sube un avatar a Cloudinary y actualiza el perfil propio.
@@ -597,15 +639,21 @@ Sube un avatar a Cloudinary y actualiza el perfil propio.
 Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt DESC`.
 - **Query params**: `page` (default `0`), `size` (default `20`).
 - **Response 200**: `Page<PostResponse>`.
-- Solo incluye posts con `status = VISIBLE` y `visibility IN (PUBLIC, FOLLOWERS_ONLY)`
-  (un post `PRIVATE` de alguien que sigo no aparece en el feed, solo en su perfil si soy
-  el dueño).
+- Incluye **todos** los posts propios, cualquiera sea su `visibility` (incluido
+  `PRIVATE`) — el feed siempre muestra el 100% de lo que uno mismo publicó.
+- Para posts de terceros que se siguen: solo `status = VISIBLE`,
+  `visibility IN (PUBLIC, FOLLOWERS_ONLY)`, **y además `profileVisibility = PUBLIC` del
+  autor** (Fase 9.1) — un post `PUBLIC` de alguien con el perfil en `PRIVATE` **no**
+  aparece en el feed de sus followers, aunque lo sigan (ver `BACKEND_ARCHITECTURE.md` §
+  Privacidad, "el perfil privado domina").
 
 ### `GET /api/posts/{postId}`
 - **Response 200**: `PostResponse`.
-- **Errores**: `404 Not Found` tanto si el post no existe **como** si existe pero el
-  usuario autenticado no tiene permiso para verlo (nunca `403` acá — la API no revela
-  la existencia de un post privado ajeno).
+- **Errores**: `404 Not Found` si el post no existe, si existe pero `visibility` no
+  autoriza al usuario autenticado a verlo, **o si el perfil del autor es `PRIVATE`
+  (Fase 9.1) y quien pregunta no es el propio autor** — nunca `403` en ninguno de estos
+  casos (la API no revela la existencia de un post privado ajeno, ni que su autor tiene
+  el perfil en privado).
 
 ### `PATCH /api/posts/{postId}`
 Solo el autor puede editar. Campos opcionales (solo se aplican los no-null).
@@ -624,7 +672,10 @@ para `MODERATOR`/`ADMIN`.
 Da "apoyo" (equivalente a un like) al post. Dispara notificación `NEW_SUPPORT` al autor
 (salvo que te apoyes a vos mismo, en cuyo caso no se notifica).
 - **Response 201** (`SupportSummaryResponse`): `{ "postId": "uuid", "supportCount": 4, "supportedByCurrentUser": true }`
-- **Errores**: `409 Conflict` si ya habías apoyado ese post. `404 Not Found` si el post no existe.
+- **Errores**: `409 Conflict` si ya habías apoyado ese post. `404 Not Found` si el post no
+  existe, o si existe pero no es visible para quien pregunta (mismo criterio de
+  visibilidad que `GET /api/posts/{postId}`, incluyendo perfil `PRIVATE` del autor,
+  Fase 9.1) — no se puede apoyar un post que no se podría ver.
 
 ### `DELETE /api/posts/{postId}/support`
 Quita el apoyo previamente dado.
@@ -647,12 +698,17 @@ Dispara notificación `NEW_COMMENT` al autor del post (salvo auto-comentario).
   ```json
   { "id": "uuid", "postId": "uuid", "author": { /* UserSummary */ }, "content": "...", "createdAt": "..." }
   ```
-- **Errores**: `404 Not Found` si el post no existe.
+- **Errores**: `404 Not Found` si el post no existe, o si existe pero no es visible para
+  quien pregunta (Fase 9.1: mismo criterio de visibilidad que `GET
+  /api/posts/{postId}`, incluyendo perfil `PRIVATE` del autor) — no se puede comentar un
+  post que no se podría ver.
 
 ### `GET /api/posts/{postId}/comments`
 **No pagina** — devuelve `List<CommentResponse>` completa, orden `createdAt ASC` (más
 viejo primero), solo `status = VISIBLE`.
-- **Errores**: `404 Not Found` si el post no existe.
+- **Errores**: `404 Not Found` si el post no existe, o si existe pero no es visible para
+  quien pregunta (mismo criterio que crear un comentario, arriba) — no se puede listar
+  comentarios de un post que no se podría ver.
 
 ### `PATCH /api/posts/{postId}/comments/{commentId}`
 Solo el autor del comentario puede editar (no hay excepción para moderador/admin acá).
@@ -660,9 +716,16 @@ Solo el autor del comentario puede editar (no hay excepción para moderador/admi
 - **Response 200**: `CommentResponse`.
 - **Errores**: `403 Forbidden` (no sos el autor), `404 Not Found` (comentario no existe,
   o existe pero no pertenece a `postId` — mismo mensaje "Comment not found" en ambos casos).
+- **Nota (Fase 9.1)**: esta ruta **no** vuelve a validar la visibilidad actual del post
+  — si sos el autor del comentario, podés editarlo/borrarlo aunque el post se haya
+  vuelto invisible para vos después de comentarlo (ej. el autor del post cambió su
+  perfil a `PRIVATE`). Gestionar tu propio comentario ya escrito es distinto de poder
+  ver contenido nuevo.
 
 ### `DELETE /api/posts/{postId}/comments/{commentId}`
-Soft delete (`status = REMOVED`). Permitido para el autor **o** `MODERATOR`/`ADMIN`.
+Soft delete (`status = REMOVED`). Permitido para el autor **o** `MODERATOR`/`ADMIN`
+(la capacidad de moderación no se ve afectada por la privacidad del post/perfil, ver
+`BACKEND_ARCHITECTURE.md` § Privacidad, admin/moderator).
 - **Response**: `204 No Content`.
 - **Errores**: `403 Forbidden`, `404 Not Found` (mismos criterios que PATCH).
 
@@ -675,6 +738,12 @@ Seguir a un usuario. Dispara notificación `NEW_FOLLOWER`.
 - **Response 201** (`FollowResponse`): `{ "followerId": "uuid", "followingId": "uuid", "createdAt": "..." }`
 - **Errores**: `400 Bad Request` (intentar seguirte a vos mismo), `404 Not Found`
   (usuario objetivo no existe), `409 Conflict` (ya lo seguías).
+- **Perfil `PRIVATE` del objetivo (Fase 9.1)**: el follow sigue siendo **inmediato**, sin
+  aprobación — no existe todavía un sistema de "solicitud de seguimiento" pendiente.
+  Seguir a un perfil `PRIVATE` no otorga acceso a sus posts (ver `GET
+  /api/users/{userId}/posts` y `BACKEND_ARCHITECTURE.md` § Privacidad): la privacidad de
+  perfil controla **visibilidad**, no aprobación de follow. Esto es una limitación
+  conocida y documentada, no un bug.
 
 ### `DELETE /api/follows/{userId}`
 - **Response**: `204 No Content`.

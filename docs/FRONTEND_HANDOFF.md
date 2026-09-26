@@ -231,6 +231,51 @@ cuenta/seguridad. No confundir los dos flujos ni reusar la misma pantalla.
   próximo refresh falle — ya se sabe de antemano que el `refreshToken` guardado va a
   quedar inválido.
 
+## Privacidad de perfil y publicaciones (Fase 9.1/9.2)
+
+Dos controles independientes, con una regla de interacción importante entre ellos.
+
+- **Perfil** (`UserResponse`/`PublicUserProfileResponse`/`DiscoverUserResponse.profileVisibility`):
+  enum `"PUBLIC" | "PRIVATE"` — **exactamente esos dos valores**, sin
+  `"FOLLOWERS_ONLY"` a nivel de perfil (eso solo existe a nivel de post, ver abajo,
+  cuidado con confundirlos). Default `PUBLIC` para cuentas nuevas y viejas.
+- **Publicación** (`PostResponse.visibility`, `CreatePostRequest`/`UpdatePostRequest.visibility`):
+  enum `"PUBLIC" | "FOLLOWERS_ONLY" | "PRIVATE"` — esto **ya existía** antes de esta
+  fase (no es nuevo), solo se documenta acá por completitud. Default `PUBLIC` si no se
+  manda `visibility` al crear.
+- **Cómo cambiar la privacidad del perfil**: `PATCH /api/users/me` con
+  `{ "profileVisibility": "PRIVATE" }` (o `"PUBLIC"`). Mismo endpoint que ya se usa para
+  editar `displayName`/`bio`/`avatarUrl` — no hay un endpoint separado. Un valor
+  distinto de esos dos responde `400`.
+- **Regla de interacción — la más importante para la UI**: si el perfil de un autor es
+  `PRIVATE`, **ninguno de sus posts es visible para terceros**, sin importar el
+  `visibility` de cada post individual (ni siquiera los `PUBLIC`). Seguir a esa persona
+  **no cambia nada** — no hay solicitud de seguimiento pendiente en esta fase, el
+  follow sigue siendo inmediato, pero no desbloquea el contenido de un perfil privado.
+  El frontend no debe mostrar un estado "solicitud enviada" para el follow — no existe.
+- **Qué pasa al entrar al perfil de otro usuario que es `PRIVATE`**: la API responde
+  `200` (nunca `404` solo por ser privado — la cuenta existe y eso es visible), pero
+  `bio` viaja en `null`. UX esperada: mostrar nombre, avatar, un aviso tipo "Este perfil
+  es privado" en el lugar donde iría la bio/los posts, y el botón de seguir/dejar de
+  seguir (que funciona normalmente). `followersCount`/`followingCount` **sí** se siguen
+  mostrando con normalidad — ocultarlos es una decisión de producto separada, todavía
+  no implementada.
+- **Qué pasa con los posts de un perfil privado**: `GET /api/users/{userId}/posts`
+  devuelve una página vacía (`200`, `content: []`), no un error — el frontend debe
+  renderizar el estado "sin publicaciones para mostrar" (el mismo que usaría para un
+  perfil público sin posts), no necesita un mensaje especial distinto para "privado".
+- **Feed propio**: siempre incluye el 100% de los posts propios, cualquiera sea su
+  `visibility`, sin importar la propia `profileVisibility`. Los posts de terceros
+  seguidos solo aparecen si el perfil de ese tercero es `PUBLIC` — un post `PUBLIC` de
+  alguien con el perfil en `PRIVATE` no aparece en el feed aunque se lo siga.
+  Comentar/reaccionar sobre un post que dejó de ser visible (ej. el autor puso su
+  perfil en privado después) empieza a fallar con `404` — tratarlo igual que "post no
+  encontrado", sin un mensaje especial.
+- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): pantalla o
+  flujo de "solicitud de seguimiento" para perfiles privados, bloqueo de usuarios,
+  silenciar/mute, listas o círculos de audiencia personalizados, ocultar contadores de
+  seguidores, controles de privacidad de mensajería.
+
 ## Endpoints disponibles
 
 Ver `API_CONTRACT.md` para el detalle completo (request/response/reglas/errores).
@@ -239,8 +284,8 @@ Resumen de superficie por dominio:
 | Dominio | Base path | Notas rápidas |
 |---|---|---|
 | Auth | `/api/auth` | público (register/login/verify-email/resend-verification/forgot-password/reset-password/refresh/logout), salvo `change-password` que requiere JWT |
-| Users | `/api/users` | perfil propio/ajeno, discover, avatar |
-| Posts | `/api/posts` | CRUD + feed + apoyo ("like") |
+| Users | `/api/users` | perfil propio/ajeno, discover, avatar, privacidad de perfil |
+| Posts | `/api/posts` | CRUD + feed + apoyo ("like") + privacidad de post |
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |
 | Follows | `/api/follows` | seguir/dejar de seguir, listas |
 | Statuses | `/api/statuses` | "estado de ánimo" efímero (24h) + reacciones |
@@ -267,7 +312,13 @@ Resumen de superficie por dominio:
   en 400 de validación).
 - **404 en vez de 403 para ocultar existencia**: por ejemplo, un post privado ajeno
   devuelve 404, no 403 — el frontend no debe intentar distinguir "no existe" de "no
-  tengo permiso" en esos casos, el backend los unifica a propósito.
+  tengo permiso" en esos casos, el backend los unifica a propósito. Mismo criterio se
+  extiende (Fase 9.1) a un post cuyo autor tiene el perfil en `PRIVATE`.
+  **Excepción deliberada**: el perfil de un usuario (`GET /api/users/{userId}`) y sus
+  posts (`GET /api/users/{userId}/posts`) **nunca** devuelven 404 solo por privacidad —
+  responden `200` con datos limitados o una lista vacía, respectivamente (ver §
+  Privacidad de perfil arriba). El 404 en esos dos endpoints significa exclusivamente
+  "el usuario no existe".
 - **PATCH parciales**: en `PATCH /api/users/me`, `PATCH /api/posts/{id}` los campos
   omitidos (`null`) se interpretan como "no tocar", no como "vaciar". No hay forma de
   vaciar `bio`/`displayName` enviando `null` explícito.

@@ -1,0 +1,17 @@
+-- Fase 9.1: privacidad de perfil. Dos estados unicamente (PUBLIC/PRIVATE) --
+-- sin followers-only-profile, sin aprobacion de seguidores, sin listas
+-- personalizadas (ver docs para el detalle de que queda deliberadamente
+-- fuera de esta fase).
+--
+-- A diferencia de V4 (email_verified), acá no hace falta la danza de
+-- DEFAULT TRUE -> DEFAULT FALSE: PUBLIC es el comportamiento actual real de
+-- TODAS las cuentas existentes (nunca hubo perfiles privados antes de esta
+-- fase), asi que un DEFAULT 'PUBLIC' unico ya es correcto tanto para filas
+-- viejas como nuevas.
+--
+-- Sin CHECK constraint sobre los valores, mismo criterio que el resto de los
+-- enums respaldados en VARCHAR de este esquema (ver V1: un CHECK redundante
+-- ya rompio en el pasado cuando un enum crecio y Hibernate no pudo
+-- reconciliarlo automaticamente) -- la validez la garantiza
+-- @Enumerated(EnumType.STRING) del lado Java.
+ALTER TABLE users ADD COLUMN profile_visibility VARCHAR(20) NOT NULL DEFAULT 'PUBLIC';
