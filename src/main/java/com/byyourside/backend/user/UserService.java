@@ -1,6 +1,9 @@
 package com.byyourside.backend.user;
 
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
+import com.byyourside.backend.follow.FollowRequestStatus;
+import com.byyourside.backend.follow.FollowState;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.storage.ImageStorageService;
 import com.byyourside.backend.user.dto.DiscoverUserResponse;
@@ -17,6 +20,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -27,6 +31,7 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
+    private final FollowRequestRepository followRequestRepository;
     private final ImageStorageService imageStorageService;
     private final ProfileAccessPolicy profileAccessPolicy;
 
@@ -77,12 +82,26 @@ public class UserService {
 
         long followersCount = followRepository.countByFollowingId(userId);
         long followingCount = followRepository.countByFollowerId(userId);
-        boolean followedByCurrentUser = !principal.getId().equals(userId)
+        boolean isOwnProfile = principal.getId().equals(userId);
+        boolean followedByCurrentUser = !isOwnProfile
                 && followRepository.existsByFollowerIdAndFollowingId(principal.getId(), userId);
+
+        FollowState followState;
+        if (isOwnProfile) {
+            followState = FollowState.NONE;
+        } else if (followedByCurrentUser) {
+            followState = FollowState.FOLLOWING;
+        } else if (followRequestRepository.existsByRequesterIdAndTargetIdAndStatus(
+                principal.getId(), userId, FollowRequestStatus.PENDING)) {
+            followState = FollowState.REQUESTED;
+        } else {
+            followState = FollowState.NONE;
+        }
 
         // Perfil privado ajeno: nunca 404 (el viewer debe poder saber que la
         // cuenta existe y seguir/dejar de seguir), pero la bio no viaja --
-        // vista limitada, ver PublicUserProfileResponse.
+        // vista limitada, ver PublicUserProfileResponse -- salvo que el
+        // viewer ya sea un follower aceptado (Fase 9.3).
         boolean fullProfile = profileAccessPolicy.canViewFullProfile(principal.getId(), target);
 
         return new PublicUserProfileResponse(
@@ -95,7 +114,8 @@ public class UserService {
                 followersCount,
                 followingCount,
                 followedByCurrentUser,
-                target.getProfileVisibility().name()
+                target.getProfileVisibility().name(),
+                followState.name()
         );
     }
 
@@ -106,15 +126,26 @@ public class UserService {
 
         excludedIds.add(principal.getId());
 
-        return userRepository.findByIdNotIn(excludedIds, pageable)
-                .map(user -> new DiscoverUserResponse(
-                        user.getId(),
-                        user.getUsername(),
-                        user.getDisplayName(),
-                        user.getProfileVisibility() == ProfileVisibility.PUBLIC ? user.getBio() : null,
-                        user.getAvatarUrl(),
-                        user.getProfileVisibility().name()
-                ));
+        Page<User> page = userRepository.findByIdNotIn(excludedIds, pageable);
+
+        // Batch, no N+1: una sola consulta para saber que targets de ESTA
+        // pagina tienen un FollowRequest PENDING mio, en vez de una consulta
+        // por fila (discover ya excluye a quienes sigo, asi que el unico
+        // otro estado posible aca es REQUESTED).
+        List<UUID> idsInPage = page.getContent().stream().map(User::getId).toList();
+        Set<UUID> pendingTargetIds = idsInPage.isEmpty()
+                ? Set.of()
+                : Set.copyOf(followRequestRepository.findPendingOutgoingTargetIdsAmong(principal.getId(), idsInPage));
+
+        return page.map(user -> new DiscoverUserResponse(
+                user.getId(),
+                user.getUsername(),
+                user.getDisplayName(),
+                user.getProfileVisibility() == ProfileVisibility.PUBLIC ? user.getBio() : null,
+                user.getAvatarUrl(),
+                user.getProfileVisibility().name(),
+                (pendingTargetIds.contains(user.getId()) ? FollowState.REQUESTED : FollowState.NONE).name()
+        ));
     }
 
     @Transactional

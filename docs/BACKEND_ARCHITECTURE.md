@@ -34,7 +34,9 @@ com.byyourside.backend
 ├── config          SecurityConfig, AdminBootstrap
 ├── email           Email transaccional: EmailService (interfaz) + ResendEmailService
 ├── exception       GlobalExceptionHandler, ErrorResponse
-├── follow          Follow (relación N:N usuario→usuario)
+├── follow          Follow (relación N:N usuario→usuario), FollowRequest/Status,
+│                   FollowState, FollowRequestService/Controller (Fase 9.3: solicitudes
+│                   de seguimiento para perfiles PRIVATE + gestión de followers)
 ├── notification     Notification, NotificationType — generadas internamente, nunca por API directa
 ├── post            Post, PostVisibility, PostStatus, PostAccessPolicy (Fase 9.1: "puede
 │                   este viewer ver este post", reutilizado por comment/support)
@@ -75,7 +77,8 @@ User (users)
  ├─ 1:N → Message como sender (messages.sender_id)
  ├─ 1:N → EmailVerificationToken (email_verification_tokens.user_id)
  ├─ 1:N → PasswordResetToken (password_reset_tokens.user_id)
- └─ 1:N → AuthSession (auth_sessions.user_id)
+ ├─ 1:N → AuthSession (auth_sessions.user_id)
+ └─ 1:N → FollowRequest como requester / target (follow_requests.requester_id / target_id)
 
 Post (posts)
  ├─ N:1 → User (author)
@@ -112,6 +115,13 @@ AuthSession (auth_sessions) — N:1 → User. Una fila = una GENERACION de refre
                         revokedAt (nullable = no revocada). Expira a los 30 dias desde
                         la ULTIMA rotacion (ventana deslizante). UNIQUE(token_hash),
                         INDEX(user_id), INDEX(family_id). Ver § Sesiones.
+FollowRequest (follow_requests) — N:1 → User (requester), N:1 → User (target). El
+                        TRAMITE de una solicitud a un perfil PRIVATE -- status
+                        (PENDING/ACCEPTED/REJECTED/CANCELLED), createdAt, respondedAt
+                        (nullable). CHECK(requester_id <> target_id). Indice UNICO
+                        PARCIAL (requester_id, target_id) WHERE status = 'PENDING' --
+                        una sola solicitud activa por par, pero historial ilimitado de
+                        filas resueltas. Ver § Privacidad, Follow requests.
 ```
 
 Todas las relaciones `@ManyToOne` son `FetchType.LAZY` con `JOIN FETCH` explícito en las
@@ -250,72 +260,145 @@ obtener access tokens nuevos sin volver a loguearse. `AuthSessionService` (paque
   sesión. No hay scheduler/cron de limpieza en esta fase; puede agregarse más adelante
   si el volumen de filas lo justifica.
 
-## Privacidad (perfil y posts, Fase 9.1/9.2)
+## Privacidad (perfil y posts, Fase 9.1/9.2/9.3)
 
 Dos capas independientes, con una regla de dominancia entre ellas.
 
 - **`ProfileVisibility`** (paquete `user`, campo `User.profileVisibility`): `PUBLIC` o
-  `PRIVATE` únicamente. Sin `followers-only-profile`, sin aprobación de seguidores, sin
-  listas/círculos personalizados -- deliberadamente fuera de esta fase (ver "Deuda
-  explícita" abajo). Default `PUBLIC` para cuentas nuevas y viejas (`V8`).
+  `PRIVATE` únicamente. Sin `followers-only-profile`, sin listas/círculos
+  personalizados -- deliberadamente fuera de alcance (ver "Deuda explícita" abajo).
+  Default `PUBLIC` para cuentas nuevas y viejas (`V8`).
 - **`PostVisibility`** (paquete `post`, campo `Post.visibility`): `PUBLIC`,
   `FOLLOWERS_ONLY`, `PRIVATE`. Esta capa **ya existía** antes de Fase 9.1 (creación/edición
   de posts, filtro del feed y del detalle por post ya estaban implementados) -- Fase
   9.1/9.2 no la reimplementó, solo la hizo interactuar correctamente con la privacidad de
   perfil nueva.
-- **Regla de dominancia**: el perfil `PRIVATE` de un autor oculta **todos** sus posts a
-  cualquiera que no sea el propio autor, sin importar `PostVisibility` -- un post
-  `PUBLIC` de un autor con perfil `PRIVATE` es tan invisible para terceros como uno
-  `PRIVATE`. Seguir a ese autor no cambia nada: **no hay aprobación de seguidores en esta
-  fase**, la privacidad de perfil controla visibilidad, no aprobación de follow (ver
-  `API_CONTRACT.md` § `POST /api/follows/{userId}`). El dueño siempre ve el 100% de lo
-  suyo, sin importar ninguna de las dos visibilidades.
+- **Regla de dominancia (actualizada en Fase 9.3)**: el perfil `PRIVATE` de un autor
+  oculta sus posts a cualquiera que no sea el propio autor **o un follower ya
+  ACEPTADO**. Antes de Fase 9.3 (cuando no existía el concepto de "seguidor aceptado",
+  todo follow era inmediato) esto bloqueaba a CUALQUIER tercero sin excepción -- ahora
+  un follower efectivo de un perfil `PRIVATE` ve sus posts `PUBLIC`/`FOLLOWERS_ONLY` con
+  normalidad; `PRIVATE` sigue siendo exclusivo del autor sin importar quién sea el
+  viewer. El dueño siempre ve el 100% de lo suyo, sin importar ninguna de las dos
+  visibilidades.
 - **`ProfileAccessPolicy`** (paquete `user`): unico punto de decisión para "¿puede este
   viewer ver el perfil completo de este usuario?" (`canViewFullProfile`). Reutilizado
   por `UserService` (perfil propio/ajeno, discover) y por `PostAccessPolicy` (abajo).
+  **Cambio de Fase 9.3**: la rama "perfil `PRIVATE`" pasó de devolver siempre `false`
+  para terceros a delegar en `FollowRepository.existsByFollowerIdAndFollowingId` --
+  como una fila en `follows` **solo** existe para una relación ya aceptada (nunca para
+  una `FollowRequest` `PENDING`/`REJECTED`/`CANCELLED`, ver más abajo), este único
+  chequeo ya es exactamente "¿es un follower efectivo?", sin necesidad de consultar
+  `FollowRequest` para nada. Este es el ÚNICO cambio de código que hizo falta para que
+  `PostAccessPolicy.canView` (sin tocarla) adoptara automáticamente la nueva semántica
+  de posts -- ver "Cero cambios en PostAccessPolicy" más abajo.
 - **`PostAccessPolicy`** (paquete `post`): unico punto de decisión para "¿puede este
   viewer ver este post?" (`canView`), combinando estado (`PostStatus.VISIBLE`), dueño,
   `ProfileAccessPolicy` del autor, y `PostVisibility` + relación de follow. Reutilizado
   por `PostService.getPost`, `CommentService` (`createComment`, `getComments`) y
-  `PostSupportService.addSupport` -- antes de esta fase, `CommentService` y
+  `PostSupportService.addSupport` -- antes de Fase 9.1, `CommentService` y
   `PostSupportService` solo chequeaban que el post existiera (`existsById`), sin validar
-  visibilidad en absoluto: comentar o apoyar un post `FOLLOWERS_ONLY`/`PRIVATE` ajeno, o
-  el post de un perfil `PRIVATE`, era posible por esas rutas laterales. Cerrado en esta
-  fase.
+  visibilidad en absoluto.
+  - **Cero cambios de código en Fase 9.3**: `canView` ya delegaba en
+    `profileAccessPolicy.canViewFullProfile(viewerId, author)` para decidir si el
+    perfil `PRIVATE` bloquea al viewer -- al cambiar esa policy (arriba), `canView`
+    adopta la nueva semántica de "accepted follower ve posts" sin que haga falta tocar
+    ni una línea suya. Exactamente el resultado que busca centralizar la regla en un
+    solo lugar.
   - **No gatea `updateComment`/`deleteComment` ni `removeSupport`**: gestionar tu propio
     comentario/apoyo ya existente no vuelve a validar la visibilidad *actual* del post
     (podés seguir borrando tu comentario aunque el post ya no sea visible para vos) --
     es una decisión deliberada, distinta de crear contenido nuevo o listar el existente.
 - **Estrategia de queries (feed y "posts por usuario") -- sin N+1**: la visibilidad se
-  aplica dentro de la misma consulta JPQL con `JOIN FETCH`, no post-filtrado en Java. La
-  condición `a.id = :currentUserId OR (a.profileVisibility = 'PUBLIC' AND ...)` (feed) y
-  `:isOwner = true OR (a.profileVisibility = 'PUBLIC' AND ...)` (posts por usuario) evita
-  el antipatrón de traer todo y filtrar/paginar en memoria, y evita una consulta de
-  `existsFollow`/`existsById` por fila. `PostAccessPolicy.canView`, en cambio, opera
-  sobre una sola entidad ya cargada (detalle de post, comment, support) -- ahí una
-  consulta puntual de follow (`existsByFollowerIdAndFollowingId`) es aceptable, no hay
-  bucle. La condición de perfil se duplica necesariamente entre el JPQL (no puede llamar
-  a `ProfileAccessPolicy`, es SQL) y la policy en Java -- duplicación intencional y
-  acotada, mismo criterio que ya usa el resto del esquema para invariantes de estado
-  (ver `PasswordResetToken.isExpired()`/`isUsed()` vs. las mismas condiciones repetidas
-  en JPQL de `PasswordResetTokenRepository`).
+  aplica dentro de la misma consulta JPQL con `JOIN FETCH`, no post-filtrado en Java.
+  - **Feed** (`findFeedForUser`): `:followedUserIds` ya viene construido en
+    `PostService.getFeed` a partir de filas REALES de `follows` -- es decir, ya son
+    todos followers efectivos, sin importar si la relación se creó por un follow
+    inmediato (perfil `PUBLIC`) o por una `FollowRequest` aceptada (perfil `PRIVATE`).
+    Por eso la query de Fase 9.3 **ya no necesita mirar `profileVisibility` del autor en
+    absoluto** (a diferencia de Fase 9.1/9.2, que sí lo hacía): pertenecer a
+    `:followedUserIds` YA implica acceso. La rama `a.id = :currentUserId` sigue
+    separada: el dueño ve TODO lo suyo (incluido `PRIVATE`), sin importar nada más.
+  - **Posts por usuario** (`findVisiblePostsByAuthor`): acá SÍ hace falta el gate de
+    `profileVisibility`, porque `:canSeeFollowersOnly` puede ser `true` para un perfil
+    `PUBLIC` sin que eso signifique nada especial (cualquiera ve lo `PUBLIC` de un
+    perfil `PUBLIC`). La condición es
+    `(a.profileVisibility = 'PUBLIC' OR :canSeeFollowersOnly = true) AND (...)` --
+    perfil público O follower efectivo abre acceso a `PUBLIC`+`FOLLOWERS_ONLY`;
+    `:isOwner` sigue siendo la única rama que además incluye `PRIVATE`.
+  - `PostAccessPolicy.canView`, en cambio, opera sobre una sola entidad ya cargada
+    (detalle de post, comment, support) -- ahí una consulta puntual de follow
+    (`existsByFollowerIdAndFollowingId`) es aceptable, no hay bucle.
 - **`getUserPosts` nunca devuelve 404 por privacidad**: si `userId` existe pero su perfil
-  es `PRIVATE` y el viewer no es el dueño, la query no matchea ninguna fila -- lista
-  vacía, `200 OK`. Mismo criterio en `GET /api/users/{userId}` (perfil, no posts): nunca
-  404 solo por ser privado, la existencia de la cuenta es visible, el contenido no.
-- **Admin/moderator**: no se amplió ni se redujo su capacidad de moderación en esta
-  fase. `deleteComment`/`deletePost` siguen sin pasar por `PostAccessPolicy` -- un
-  moderador puede borrar un comentario o post que ya sabía que existía (ej. por un
-  reporte), sin necesidad de que la política de visibilidad se lo confirme de nuevo. No
-  hay ningún endpoint de moderación que exponga contenido privado que antes no
-  expusiera: `ReportService` referencia posts/comments de forma polimórfica
-  (`targetId`/`targetType`, sin FK) y nunca devuelve el contenido en sí en
-  `ReportResponse`, solo metadata del reporte -- fuera del alcance de este cambio.
-- **Deuda explícita (fuera de alcance de Fase 9.1/9.2)**: follow requests/aprobación de
-  seguidores, block, mute, custom audiences/círculos como audiencia, privacidad de
-  perfil por campo individual, ocultar contadores de seguidores, controles de privacidad
-  de mensajería, discovery privacy avanzada (`GET /api/users/discover` no filtra por
-  `profileVisibility`).
+  es `PRIVATE` y el viewer no es el dueño ni un follower efectivo, la query no matchea
+  ninguna fila -- lista vacía, `200 OK`. Mismo criterio en `GET /api/users/{userId}`
+  (perfil, no posts): nunca 404 solo por ser privado, la existencia de la cuenta es
+  visible, el contenido no.
+- **Admin/moderator**: no se amplió ni se redujo su capacidad de moderación.
+  `deleteComment`/`deletePost` siguen sin pasar por `PostAccessPolicy` -- un moderador
+  puede borrar un comentario o post que ya sabía que existía (ej. por un reporte), sin
+  necesidad de que la política de visibilidad se lo confirme de nuevo. `ReportService`
+  referencia posts/comments de forma polimórfica (`targetId`/`targetType`, sin FK) y
+  nunca devuelve el contenido en sí en `ReportResponse`, solo metadata del reporte --
+  fuera del alcance de este cambio.
+
+### Follow requests (Fase 9.3)
+
+- **`FollowRequest`** (paquete `follow`): el TRÁMITE de una solicitud de seguimiento a
+  un perfil `PRIVATE` -- distinto de `Follow`, que es la relación efectiva resultante
+  (creada recién cuando la solicitud se acepta). Estados: `PENDING`, `ACCEPTED`,
+  `REJECTED`, `CANCELLED`. Ninguna fila se borra nunca -- se conserva como historial
+  mínimo, igual que el resto de los tokens de un solo uso de este esquema.
+- **`follows` solo contiene relaciones aceptadas, por construcción**: ninguna operación
+  de `FollowService`/`FollowRequestService` crea una fila en `follows` salvo (a) un
+  follow inmediato a un perfil `PUBLIC`, o (b) `FollowRequestService.accept` sobre una
+  solicitud a un perfil `PRIVATE`. Una solicitud `PENDING`/`REJECTED`/`CANCELLED` nunca
+  produce una fila ahí. Esta invariante es la que permite que `ProfileAccessPolicy`
+  (arriba) reduzca "¿es un follower efectivo?" a un solo `existsBy...` sobre `follows`,
+  sin tener que consultar `FollowRequest` para nada.
+  - **`removeFollower`** (`DELETE /api/follows/followers/{userId}`): borra esa misma
+    fila desde el otro lado (el target expulsa a un follower) -- corta el acceso de
+    inmediato, sin estado adicional, sin afectar la relación inversa.
+- **Sin duplicar `PENDING` -- índice único parcial**: `idx_follow_requests_one_pending_per_pair`
+  (`V9`, `UNIQUE (requester_id, target_id) WHERE status = 'PENDING'`) permite historial
+  ilimitado de filas `ACCEPTED`/`REJECTED`/`CANCELLED` para el mismo par (ej. rechazar
+  una solicitud y que el requester pueda volver a pedir más adelante sin chocar con la
+  fila vieja ya resuelta), pero solo UNA `PENDING` activa a la vez. También es la
+  defensa contra la carrera de dos `POST /api/follows/{id}` concurrentes creando la
+  misma solicitud dos veces -- `FollowService.requestFollow` atrapa el
+  `DataIntegrityViolationException` resultante y devuelve la solicitud que ganó la
+  carrera, en vez de propagar un 500 (mismo patrón que `AuthService.register` con el
+  email duplicado).
+- **Concurrencia en accept/reject/cancel -- claim atómico**: mismo patrón que
+  `AuthSessionRepository.claimForRotation` (Fase 1.5). `FollowRequestRepository.claimAccept`/
+  `claimReject`/`claimCancel` son `UPDATE ... WHERE status = 'PENDING'`, que solo puede
+  tener éxito para UNA de dos requests concurrentes sobre la misma fila (aceptar dos
+  veces, aceptar+cancelar a la vez, etc). El caller (`FollowRequestService`) hace
+  primero una lectura de validación (existe/soy el target o requester/está `PENDING`,
+  para poder devolver 404/403/409 específicos) y recién después el claim atómico; si el
+  claim devuelve `0`, alguien más ya la resolvió entre la lectura y el `UPDATE` -- se
+  trata como `409 Conflict`, igual que si ya no estuviera `PENDING` desde el principio.
+- **`FollowResponse.requestId`**: nulo cuando `followState` es `"FOLLOWING"` (no hay
+  trámite), poblado cuando es `"REQUESTED"` -- evita que el frontend tenga que llamar a
+  `GET /api/follow-requests/outgoing` solo para descubrir el id que el propio `POST`
+  acaba de crear, para poder ofrecer "cancelar" de inmediato.
+- **Notificaciones**: `FOLLOW_REQUEST_RECEIVED` (al crear la solicitud) y
+  `FOLLOW_REQUEST_ACCEPTED` (al aceptarla), mismo mecanismo (`NotificationService.notify`,
+  WebSocket + persistida) que `NEW_FOLLOWER`/`NEW_COMMENT`/`NEW_SUPPORT`. **Rechazar no
+  notifica** -- decisión de producto, no aporta valor suficiente como para justificar
+  avisarle al requester que lo rechazaron.
+- **`FollowState`** (paquete `follow`, enum `NONE`/`REQUESTED`/`FOLLOWING`): resumen de
+  "cómo estoy parado hoy frente a esta persona", expuesto en `PublicUserProfileResponse`,
+  `DiscoverUserResponse` y `FollowResponse`. Distinto de `FollowRequestStatus` (el
+  historial de un trámite puntual) -- responden preguntas distintas, nunca se
+  confunden ni pueden contradecirse entre sí (`followedByCurrentUser` se sigue
+  derivando del mismo chequeo que `followState == FOLLOWING`).
+- **Deuda explícita (fuera de alcance)**: block, mute, custom audiences/círculos como
+  audiencia, privacidad de perfil por campo individual, ocultar contadores de
+  seguidores, controles de privacidad de mensajería, discovery privacy avanzada (`GET
+  /api/users/discover` no filtra por `profileVisibility` ni por `followState`),
+  expiración automática de `FollowRequest`, rate limiting específico para follow
+  requests, recomendaciones/anti-spam.
 
 ## Persistencia
 
@@ -343,6 +426,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V6__add_password_reset_tokens.sql` | tabla `password_reset_tokens` |
 | `V7__add_auth_sessions.sql` | tabla `auth_sessions` |
 | `V8__add_profile_visibility.sql` | `users.profile_visibility` |
+| `V9__add_follow_requests.sql` | tabla `follow_requests` |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`

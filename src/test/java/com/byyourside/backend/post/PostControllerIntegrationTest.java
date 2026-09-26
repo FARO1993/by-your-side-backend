@@ -4,6 +4,7 @@ import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.support.PostSupportRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -50,6 +51,9 @@ class PostControllerIntegrationTest {
     private FollowRepository followRepository;
 
     @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
     private PostRepository postRepository;
 
     @Autowired
@@ -72,6 +76,7 @@ class PostControllerIntegrationTest {
     void setUp() throws Exception {
         postSupportRepository.deleteAll();
         postRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();

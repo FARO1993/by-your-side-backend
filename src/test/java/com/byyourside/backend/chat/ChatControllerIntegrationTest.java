@@ -4,6 +4,7 @@ import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -47,6 +48,9 @@ class ChatControllerIntegrationTest {
     private FollowRepository followRepository;
 
     @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
     private MessageRepository messageRepository;
 
     @Autowired
@@ -72,6 +76,7 @@ class ChatControllerIntegrationTest {
     void setUp() throws Exception {
         messageRepository.deleteAll();
         conversationRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
