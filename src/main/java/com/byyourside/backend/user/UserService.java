@@ -28,6 +28,7 @@ public class UserService {
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
     private final ImageStorageService imageStorageService;
+    private final ProfileAccessPolicy profileAccessPolicy;
 
     public UserResponse getCurrentUser(UserPrincipal principal) {
         User user = findByIdOrThrow(principal.getId());
@@ -45,6 +46,9 @@ public class UserService {
         }
         if (request.avatarUrl() != null) {
             user.setAvatarUrl(request.avatarUrl());
+        }
+        if (request.profileVisibility() != null) {
+            user.setProfileVisibility(request.profileVisibility());
         }
 
         user = userRepository.save(user);
@@ -76,16 +80,22 @@ public class UserService {
         boolean followedByCurrentUser = !principal.getId().equals(userId)
                 && followRepository.existsByFollowerIdAndFollowingId(principal.getId(), userId);
 
+        // Perfil privado ajeno: nunca 404 (el viewer debe poder saber que la
+        // cuenta existe y seguir/dejar de seguir), pero la bio no viaja --
+        // vista limitada, ver PublicUserProfileResponse.
+        boolean fullProfile = profileAccessPolicy.canViewFullProfile(principal.getId(), target);
+
         return new PublicUserProfileResponse(
                 target.getId(),
                 target.getUsername(),
                 target.getDisplayName(),
-                target.getBio(),
+                fullProfile ? target.getBio() : null,
                 target.getAvatarUrl(),
                 target.getCreatedAt(),
                 followersCount,
                 followingCount,
-                followedByCurrentUser
+                followedByCurrentUser,
+                target.getProfileVisibility().name()
         );
     }
 
@@ -101,8 +111,9 @@ public class UserService {
                         user.getId(),
                         user.getUsername(),
                         user.getDisplayName(),
-                        user.getBio(),
-                        user.getAvatarUrl()
+                        user.getProfileVisibility() == ProfileVisibility.PUBLIC ? user.getBio() : null,
+                        user.getAvatarUrl(),
+                        user.getProfileVisibility().name()
                 ));
     }
 
@@ -148,7 +159,8 @@ public class UserService {
                 user.getRole().name(),
                 user.getCreatedAt(),
                 user.isEmailVerified(),
-                user.getEmailVerifiedAt()
+                user.getEmailVerifiedAt(),
+                user.getProfileVisibility().name()
         );
     }
 }

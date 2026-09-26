@@ -36,13 +36,15 @@ com.byyourside.backend
 ├── exception       GlobalExceptionHandler, ErrorResponse
 ├── follow          Follow (relación N:N usuario→usuario)
 ├── notification     Notification, NotificationType — generadas internamente, nunca por API directa
-├── post            Post, PostVisibility, PostStatus
+├── post            Post, PostVisibility, PostStatus, PostAccessPolicy (Fase 9.1: "puede
+│                   este viewer ver este post", reutilizado por comment/support)
 ├── report          Report, ReportReason/Status/TargetType — moderación
 ├── security        JWT: JwtService, JwtAuthenticationFilter, UserPrincipal, CustomUserDetailsService
 ├── status          "Estado de ánimo": Status, StatusMood, StatusReaction, StatusReactionType
 ├── storage         Cloudinary: ImageStorageService (interfaz) + CloudinaryImageStorageService
 ├── support         PostSupport — "apoyo" (like) a un post
-├── user            User, UserRole, UserStatus — entidad central, referenciada por casi todo
+├── user            User, UserRole, UserStatus, ProfileVisibility, ProfileAccessPolicy
+│                   (Fase 9.1) — entidad central, referenciada por casi todo
 └── websocket       WebSocketConfig, StompAuthChannelInterceptor
 ```
 
@@ -248,6 +250,73 @@ obtener access tokens nuevos sin volver a loguearse. `AuthSessionService` (paque
   sesión. No hay scheduler/cron de limpieza en esta fase; puede agregarse más adelante
   si el volumen de filas lo justifica.
 
+## Privacidad (perfil y posts, Fase 9.1/9.2)
+
+Dos capas independientes, con una regla de dominancia entre ellas.
+
+- **`ProfileVisibility`** (paquete `user`, campo `User.profileVisibility`): `PUBLIC` o
+  `PRIVATE` únicamente. Sin `followers-only-profile`, sin aprobación de seguidores, sin
+  listas/círculos personalizados -- deliberadamente fuera de esta fase (ver "Deuda
+  explícita" abajo). Default `PUBLIC` para cuentas nuevas y viejas (`V8`).
+- **`PostVisibility`** (paquete `post`, campo `Post.visibility`): `PUBLIC`,
+  `FOLLOWERS_ONLY`, `PRIVATE`. Esta capa **ya existía** antes de Fase 9.1 (creación/edición
+  de posts, filtro del feed y del detalle por post ya estaban implementados) -- Fase
+  9.1/9.2 no la reimplementó, solo la hizo interactuar correctamente con la privacidad de
+  perfil nueva.
+- **Regla de dominancia**: el perfil `PRIVATE` de un autor oculta **todos** sus posts a
+  cualquiera que no sea el propio autor, sin importar `PostVisibility` -- un post
+  `PUBLIC` de un autor con perfil `PRIVATE` es tan invisible para terceros como uno
+  `PRIVATE`. Seguir a ese autor no cambia nada: **no hay aprobación de seguidores en esta
+  fase**, la privacidad de perfil controla visibilidad, no aprobación de follow (ver
+  `API_CONTRACT.md` § `POST /api/follows/{userId}`). El dueño siempre ve el 100% de lo
+  suyo, sin importar ninguna de las dos visibilidades.
+- **`ProfileAccessPolicy`** (paquete `user`): unico punto de decisión para "¿puede este
+  viewer ver el perfil completo de este usuario?" (`canViewFullProfile`). Reutilizado
+  por `UserService` (perfil propio/ajeno, discover) y por `PostAccessPolicy` (abajo).
+- **`PostAccessPolicy`** (paquete `post`): unico punto de decisión para "¿puede este
+  viewer ver este post?" (`canView`), combinando estado (`PostStatus.VISIBLE`), dueño,
+  `ProfileAccessPolicy` del autor, y `PostVisibility` + relación de follow. Reutilizado
+  por `PostService.getPost`, `CommentService` (`createComment`, `getComments`) y
+  `PostSupportService.addSupport` -- antes de esta fase, `CommentService` y
+  `PostSupportService` solo chequeaban que el post existiera (`existsById`), sin validar
+  visibilidad en absoluto: comentar o apoyar un post `FOLLOWERS_ONLY`/`PRIVATE` ajeno, o
+  el post de un perfil `PRIVATE`, era posible por esas rutas laterales. Cerrado en esta
+  fase.
+  - **No gatea `updateComment`/`deleteComment` ni `removeSupport`**: gestionar tu propio
+    comentario/apoyo ya existente no vuelve a validar la visibilidad *actual* del post
+    (podés seguir borrando tu comentario aunque el post ya no sea visible para vos) --
+    es una decisión deliberada, distinta de crear contenido nuevo o listar el existente.
+- **Estrategia de queries (feed y "posts por usuario") -- sin N+1**: la visibilidad se
+  aplica dentro de la misma consulta JPQL con `JOIN FETCH`, no post-filtrado en Java. La
+  condición `a.id = :currentUserId OR (a.profileVisibility = 'PUBLIC' AND ...)` (feed) y
+  `:isOwner = true OR (a.profileVisibility = 'PUBLIC' AND ...)` (posts por usuario) evita
+  el antipatrón de traer todo y filtrar/paginar en memoria, y evita una consulta de
+  `existsFollow`/`existsById` por fila. `PostAccessPolicy.canView`, en cambio, opera
+  sobre una sola entidad ya cargada (detalle de post, comment, support) -- ahí una
+  consulta puntual de follow (`existsByFollowerIdAndFollowingId`) es aceptable, no hay
+  bucle. La condición de perfil se duplica necesariamente entre el JPQL (no puede llamar
+  a `ProfileAccessPolicy`, es SQL) y la policy en Java -- duplicación intencional y
+  acotada, mismo criterio que ya usa el resto del esquema para invariantes de estado
+  (ver `PasswordResetToken.isExpired()`/`isUsed()` vs. las mismas condiciones repetidas
+  en JPQL de `PasswordResetTokenRepository`).
+- **`getUserPosts` nunca devuelve 404 por privacidad**: si `userId` existe pero su perfil
+  es `PRIVATE` y el viewer no es el dueño, la query no matchea ninguna fila -- lista
+  vacía, `200 OK`. Mismo criterio en `GET /api/users/{userId}` (perfil, no posts): nunca
+  404 solo por ser privado, la existencia de la cuenta es visible, el contenido no.
+- **Admin/moderator**: no se amplió ni se redujo su capacidad de moderación en esta
+  fase. `deleteComment`/`deletePost` siguen sin pasar por `PostAccessPolicy` -- un
+  moderador puede borrar un comentario o post que ya sabía que existía (ej. por un
+  reporte), sin necesidad de que la política de visibilidad se lo confirme de nuevo. No
+  hay ningún endpoint de moderación que exponga contenido privado que antes no
+  expusiera: `ReportService` referencia posts/comments de forma polimórfica
+  (`targetId`/`targetType`, sin FK) y nunca devuelve el contenido en sí en
+  `ReportResponse`, solo metadata del reporte -- fuera del alcance de este cambio.
+- **Deuda explícita (fuera de alcance de Fase 9.1/9.2)**: follow requests/aprobación de
+  seguidores, block, mute, custom audiences/círculos como audiencia, privacidad de
+  perfil por campo individual, ocultar contadores de seguidores, controles de privacidad
+  de mensajería, discovery privacy avanzada (`GET /api/users/discover` no filtra por
+  `profileVisibility`).
+
 ## Persistencia
 
 - **PostgreSQL** vía Spring Data JPA / Hibernate. `ddl-auto: validate` — el esquema
@@ -273,6 +342,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V5__add_email_verification_token_invalidation.sql` | `email_verification_tokens.invalidated_at` |
 | `V6__add_password_reset_tokens.sql` | tabla `password_reset_tokens` |
 | `V7__add_auth_sessions.sql` | tabla `auth_sessions` |
+| `V8__add_profile_visibility.sql` | `users.profile_visibility` |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`
@@ -282,7 +352,11 @@ de la columna se cambia a `FALSE`, de forma que solo afecta a las filas insertad
 en adelante. `email_verified_at` se backfillea con `created_at` para esas cuentas
 preexistentes (fecha aproximada, no una verificación real). Este patrón (agregar con un
 default que cubra el pasado, después cambiar el default para el futuro) es el que hay
-que repetir si se agrega otra columna `NOT NULL` a `users` más adelante.
+que repetir si se agrega otra columna `NOT NULL` a `users` más adelante **siempre que el
+comportamiento pasado y futuro deban diferir**. `V8` (`profile_visibility`) es el
+contraejemplo: un único `DEFAULT 'PUBLIC'` alcanza, porque `PUBLIC` es simultáneamente
+el default correcto para filas viejas (nunca existieron perfiles privados antes de Fase
+9.1) y para filas nuevas — no hace falta la danza de dos pasos.
 
 `baseline-on-migrate: true`, `baseline-version: 1`. Los campos `VARCHAR` que respaldan
 enums (`type`, `status`, `reason`, etc.) **no tienen `CHECK` constraint** a propósito —

@@ -3,6 +3,7 @@ package com.byyourside.backend.support;
 import com.byyourside.backend.notification.NotificationService;
 import com.byyourside.backend.notification.NotificationType;
 import com.byyourside.backend.post.Post;
+import com.byyourside.backend.post.PostAccessPolicy;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.support.dto.SupportSummaryResponse;
@@ -25,11 +26,18 @@ public class PostSupportService {
     private final PostRepository postRepository;
     private final UserRepository userRepository;
     private final NotificationService notificationService;
+    private final PostAccessPolicy postAccessPolicy;
 
     @Transactional
     public SupportSummaryResponse addSupport(UserPrincipal principal, UUID postId) {
         Post post = postRepository.findById(postId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found"));
+
+        // Mismo criterio 404 que PostService.getPost/CommentService: no
+        // revelar que un post invisible existe permitiendo apoyarlo.
+        if (!postAccessPolicy.canView(principal.getId(), post)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
+        }
 
         if (postSupportRepository.existsByPostIdAndUserId(postId, principal.getId())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "You already sent support to this post");

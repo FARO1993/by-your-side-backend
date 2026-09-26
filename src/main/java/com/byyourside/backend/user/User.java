@@ -54,6 +54,11 @@ public class User {
     @Builder.Default
     private UserStatus status = UserStatus.ACTIVE;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "profile_visibility", nullable = false, length = 20)
+    @Builder.Default
+    private ProfileVisibility profileVisibility = ProfileVisibility.PUBLIC;
+
     @Column(name = "email_verified", nullable = false)
     @Builder.Default
     private boolean emailVerified = false;

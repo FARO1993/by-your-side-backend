@@ -30,8 +30,9 @@ public class CommentController {
     }
 
     @GetMapping
-    public ResponseEntity<List<CommentResponse>> getComments(@PathVariable UUID postId) {
-        return ResponseEntity.ok(commentService.getComments(postId));
+    public ResponseEntity<List<CommentResponse>> getComments(@AuthenticationPrincipal UserPrincipal principal,
+                                                              @PathVariable UUID postId) {
+        return ResponseEntity.ok(commentService.getComments(principal, postId));
     }
 
     @PatchMapping("/{commentId}")

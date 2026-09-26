@@ -33,6 +33,7 @@ public class PostService {
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
     private final PostSupportRepository postSupportRepository;
+    private final PostAccessPolicy postAccessPolicy;
 
     @Transactional
     public PostResponse createPost(UserPrincipal principal, CreatePostRequest request) {
@@ -98,7 +99,7 @@ public class PostService {
 
         feedAuthorIds.add(principal.getId());
 
-        Page<Post> postsPage = postRepository.findFeedForUser(feedAuthorIds, pageable);
+        Page<Post> postsPage = postRepository.findFeedForUser(feedAuthorIds, principal.getId(), pageable);
 
         return enrichAndMap(principal, postsPage);
     }
@@ -112,6 +113,10 @@ public class PostService {
         boolean isFollower = isOwner
                 || followRepository.existsByFollowerIdAndFollowingId(principal.getId(), authorId);
 
+        // Si el perfil del autor es PRIVATE y el viewer no es el dueno, la
+        // query no devuelve ninguna fila (ver PostRepository) -- lista
+        // vacia, 200 OK, nunca 404: la existencia del usuario ya se
+        // confirmo arriba.
         Page<Post> postsPage = postRepository.findVisiblePostsByAuthor(authorId, isFollower, isOwner, pageable);
 
         Set<UUID> followedAuthorIds = isFollower ? Set.of(authorId) : Set.of();
@@ -122,7 +127,10 @@ public class PostService {
         Post post = postRepository.findById(postId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found"));
 
-        if (post.getStatus() != PostStatus.VISIBLE) {
+        // 404, no 403: no revelamos que un post existe (ni que es privado, ni
+        // que su autor tiene el perfil en privado) si quien pregunta no
+        // tiene permiso para verlo.
+        if (!postAccessPolicy.canView(principal.getId(), post)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
         }
 
@@ -130,18 +138,6 @@ public class PostService {
         boolean isOwner = principal.getId().equals(authorId);
         boolean isFollower = isOwner
                 || followRepository.existsByFollowerIdAndFollowingId(principal.getId(), authorId);
-
-        boolean visible = switch (post.getVisibility()) {
-            case PUBLIC -> true;
-            case FOLLOWERS_ONLY -> isFollower;
-            case PRIVATE -> isOwner;
-        };
-
-        // 404, no 403: no revelamos que un post privado existe si quien
-        // pregunta no tiene permiso para verlo.
-        if (!visible) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
-        }
 
         long supportCount = postSupportRepository.countByPostId(postId);
         boolean supported = postSupportRepository.existsByPostIdAndUserId(postId, principal.getId());

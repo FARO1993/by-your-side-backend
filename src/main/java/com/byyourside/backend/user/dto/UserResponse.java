@@ -13,6 +13,7 @@ public record UserResponse(
         String role,
         Instant createdAt,
         boolean emailVerified,
-        Instant emailVerifiedAt
+        Instant emailVerifiedAt,
+        String profileVisibility
 ) {
 }
