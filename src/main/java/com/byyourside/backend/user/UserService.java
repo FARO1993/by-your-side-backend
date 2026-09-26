@@ -1,6 +1,7 @@
 package com.byyourside.backend.user;
 
 import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.follow.FollowRequestStatus;
@@ -36,6 +37,7 @@ public class UserService {
     private final ImageStorageService imageStorageService;
     private final ProfileAccessPolicy profileAccessPolicy;
     private final UserBlockRepository userBlockRepository;
+    private final UserMuteRepository userMuteRepository;
 
     public UserResponse getCurrentUser(UserPrincipal principal) {
         User user = findByIdOrThrow(principal.getId());
@@ -96,6 +98,13 @@ public class UserService {
         boolean blockedByCurrentUser = !principal.getId().equals(userId)
                 && userBlockRepository.existsByBlockerIdAndBlockedId(principal.getId(), userId);
 
+        // Fase 9.5: a diferencia de blockedByCurrentUser, mutear no es
+        // control de acceso -- este flag no participa en ningun chequeo de
+        // arriba/abajo (ni 404, ni fullProfile), solo se expone para que el
+        // frontend pueda mostrar el boton Silenciar/Dejar de silenciar.
+        boolean mutedByCurrentUser = !principal.getId().equals(userId)
+                && userMuteRepository.existsByMuterIdAndMutedId(principal.getId(), userId);
+
         long followersCount = followRepository.countByFollowingId(userId);
         long followingCount = followRepository.countByFollowerId(userId);
         boolean isOwnProfile = principal.getId().equals(userId);
@@ -132,7 +141,8 @@ public class UserService {
                 followedByCurrentUser,
                 target.getProfileVisibility().name(),
                 followState.name(),
-                blockedByCurrentUser
+                blockedByCurrentUser,
+                mutedByCurrentUser
         );
     }
 
@@ -146,6 +156,13 @@ public class UserService {
         // consulta por fila de discover.
         excludedIds.addAll(userBlockRepository.findBlockedIdsByBlocker(principal.getId()));
         excludedIds.addAll(userBlockRepository.findBlockerIdsByBlocked(principal.getId()));
+
+        // Fase 9.5: exclusion UNILATERAL de mute -- solo "a quien yo
+        // muteo" (a diferencia de block, no hay equivalente a
+        // findBlockerIdsByBlocked: que alguien me haya muteado a mi no me
+        // saca de SU discover en ningun sentido reciproco, porque yo no soy
+        // quien filtra ahi).
+        excludedIds.addAll(userMuteRepository.findMutedIdsByMuter(principal.getId()));
 
         excludedIds.add(principal.getId());
 

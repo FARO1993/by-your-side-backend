@@ -40,6 +40,10 @@ com.byyourside.backend
 ├── follow          Follow (relación N:N usuario→usuario), FollowRequest/Status,
 │                   FollowState, FollowRequestService/Controller (Fase 9.3: solicitudes
 │                   de seguimiento para perfiles PRIVATE + gestión de followers)
+├── mute            UserMute, UserMuteRepository (findMutedIdsByMuter, unilateral),
+│                   MuteService (mute/unmute/lista) — Fase 9.5. Deliberadamente NO tiene
+│                   un "MutePolicy" equivalente a BlockPolicy: mute no es control de
+│                   acceso, cada query que lo necesita filtra directo (ver más abajo)
 ├── notification     Notification, NotificationType — generadas internamente, nunca por API directa
 ├── post            Post, PostVisibility, PostStatus, PostAccessPolicy (Fase 9.1: "puede
 │                   este viewer ver este post", reutilizado por comment/support)
@@ -396,13 +400,13 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   historial de un trámite puntual) -- responden preguntas distintas, nunca se
   confunden ni pueden contradecirse entre sí (`followedByCurrentUser` se sigue
   derivando del mismo chequeo que `followState == FOLLOWING`).
-- **Deuda explícita (fuera de alcance)**: mute, custom audiences/círculos como
+- **Deuda explícita (fuera de alcance)**: custom audiences/círculos como
   audiencia, privacidad de perfil por campo individual, ocultar contadores de
   seguidores, controles de privacidad de mensajería, discovery privacy avanzada (`GET
   /api/users/discover` no filtra por `profileVisibility` ni por `followState`),
   expiración automática de `FollowRequest`, rate limiting específico para follow
-  requests, recomendaciones/anti-spam. (`block` dejó de estar en esta lista — ver
-  "Bloqueo de usuarios (Fase 9.4)" más abajo.)
+  requests, recomendaciones/anti-spam. (`block` y `mute` dejaron de estar en esta lista —
+  ver "Bloqueo de usuarios (Fase 9.4)" y "Silenciar usuarios (Fase 9.5)" más abajo.)
 
 ## Bloqueo de usuarios (Fase 9.4)
 
@@ -517,10 +521,91 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   sobrecomplicar" aplicado en fases anteriores a otras carreras cross-tabla). Accept/
   reject-vs-bloqueo, en cambio, sí queda completamente cerrado por el claim atómico
   compartido (`claimCancel`/`claimAccept` sobre la misma fila `FollowRequest`).
-- **Deuda explícita (fuera de alcance)**: mute, ocultar un post puntual, ocultar a un
-  usuario sin bloquearlo, reporte automático al bloquear, motivo de bloqueo, bloqueo
-  temporizado, "amigos cercanos"/audiencias personalizadas/círculos, bloqueo por
-  dispositivo, rate limiting/anti-abuso más allá de lo ya existente.
+- **Deuda explícita (fuera de alcance)**: ocultar un post puntual, ocultar a un usuario
+  sin bloquearlo, reporte automático al bloquear, motivo de bloqueo, bloqueo temporizado,
+  "amigos cercanos"/audiencias personalizadas/círculos, bloqueo por dispositivo, rate
+  limiting/anti-abuso más allá de lo ya existente. (`mute` dejó de estar en esta lista —
+  ver "Silenciar usuarios (Fase 9.5)" más abajo.)
+
+## Silenciar usuarios (Fase 9.5)
+
+- **`UserMute`** (paquete `mute`): `muter`, `muted`, `createdAt`. Direccional en la tabla
+  y, a diferencia de `UserBlock`, **también direccional en el efecto** — no existe
+  ningún `MutePolicy.isMutedBetween` bilateral, porque mute nunca se consulta en las dos
+  direcciones a la vez en ningún punto del código. `UNIQUE(muter_id, muted_id)`,
+  `CHECK(muter_id <> muted_id)`, mismo criterio de "unmute = `DELETE` liso, sin
+  historial" que `UserBlock` (ver `V11`). `V11__add_user_mutes.sql`.
+- **Por qué no hay un `MutePolicy` centralizado como `BlockPolicy`**: `BlockPolicy`
+  existe porque el bloqueo es **control de acceso** consultado desde `boolean` checks
+  dispersos (`ProfileAccessPolicy`, `ChatService`, `FollowService`, etc.) antes de decidir
+  si algo se puede hacer. Mute **no es control de acceso** — nunca decide si algo está
+  permitido, solo si algo aparece en una lista agregada. Cada superficie que lo necesita
+  agrega su propio filtro directamente en la query (mismo patrón que ya usaban esas
+  queries para bloqueo), en vez de introducir una capa de indirección para un chequeo
+  que en la práctica es siempre `NOT EXISTS (... muter = viewerId ...)`, nunca reusado
+  como decisión booleana en medio de lógica de negocio.
+- **`MuteService.muteUser`/`unmuteUser`** (paquete `mute`): igual de simple que
+  `BlockService`, pero **sin ningún efecto secundario** — `muteUser` es idempotente
+  (mismo manejo de `DataIntegrityViolationException` por carrera que
+  `BlockService.blockUser`/`FollowService.requestFollow`) y no toca `Follow`,
+  `FollowRequest` ni `UserBlock` en absoluto. `unmuteUser` es el `DELETE` liso de la fila
+  — no hace falta documentar una asimetría "no restaura nada" como en block, porque acá
+  nunca hubo nada que mutar en primer lugar.
+- **Ningún cambio en `ProfileAccessPolicy` ni `PostAccessPolicy`**: a propósito, ninguna
+  de las dos policies de acceso fue tocada en esta fase. Perfil completo/limitado, acceso
+  a un post individual, posts por usuario y comentarios/apoyo siguen resolviéndose
+  exactamente igual con o sin mute de por medio — mutear a alguien no cambia ni un bit de
+  lo que esas policies deciden.
+- **Feed (posts y status) — filtro unilateral en la query, mismo patrón que bloqueo pero
+  sin la contraparte transitiva**: `findFeedForUser` (`PostRepository`) y
+  `findActiveStatusesForUsers` (`StatusRepository`) llevan un `NOT EXISTS` adicional
+  sobre `UserMute` con `muter.id = :currentUserId` — a diferencia del `NOT EXISTS` de
+  `UserBlock` (que documenta ser "redundante" porque bloquear ya limpia `follows`), este
+  **no es redundante con nada**: mutear no toca `follows`, así que esta query es el único
+  mecanismo que saca esos posts/estados del feed. El autor sigue siendo un follower
+  efectivo en todo lo demás.
+- **Discover — exclusión unilateral batch, sin contraparte**: `UserService.discoverUsers`
+  agrega `findMutedIdsByMuter(principal.getId())` (1 consulta batch más) al mismo
+  `excludedIds` que ya arma para follows/bloqueos. A diferencia de bloqueo, **no** existe
+  un `findMuterIdsByMuted` — que alguien me haya muteado a mí no me excluye de nada.
+- **Disponibilidad/Companion — mismo criterio unilateral en la query nativa**:
+  `AvailabilityRepository.findRandomAvailable` lleva un `NOT EXISTS` adicional sobre
+  `user_mutes` con `muter_id = :excludeUserId` (una sola dirección, sin el `OR` que sí
+  tiene el de `user_blocks`). No borra ninguna fila de `Availability` — solo saca al
+  muted del listado de sugerencias para el muter. Si ya existe una conversación entre
+  ambos, `ChatService.getOrCreateConversation` sigue funcionando igual (no fue tocado en
+  esta fase) — mute nunca corta la posibilidad de contacto directo ya establecida.
+- **Chat, notificaciones, comentarios/apoyo, acceso directo a perfil/post — sin cambios,
+  por decisión explícita**: ninguno de estos módulos fue tocado. `ChatService`,
+  `NotificationService.notify()`, `CommentService`, `PostSupportService`,
+  `PostAccessPolicy.canView` y `ProfileAccessPolicy.canViewFullProfile` no importan nada
+  del paquete `mute` ni lo chequean. La razón de fondo, documentada también en
+  `API_CONTRACT.md` § 13: mute afecta *lo que el sistema arma para vos* (feed, discover,
+  listados agregados), nunca *lo que vos accedés directamente* ni *lo que otros pueden
+  seguir haciendo con vos* (comentar, apoyar, escribirte). Silenciar notificaciones
+  específicamente es una semántica distinta ("notification preferences"), fuera de
+  alcance a propósito, no una omisión.
+- **Interacción con `Block` — un solo punto de acoplamiento, unidireccional**:
+  `BlockService.blockUser` borra el `UserMute` propio del blocker hacia el target al
+  final de la misma transacción de bloqueo (queda redundante: block ya oculta todo lo que
+  ese mute ocultaba, y además corta acceso/interacción, que mute nunca tocó). Es el
+  **único** lugar donde `block` conoce a `mute` — `MuteService` no importa nada de
+  `block`, evitando una dependencia circular entre paquetes. El sentido inverso (mute del
+  target hacia el blocker) no se toca a propósito: es una preferencia ajena a la acción
+  de bloquear, y no debilita el bloqueo — el filtrado de `UserBlock` en feed/discover/
+  status/disponibilidad ya excluye al blocker de lo que ve el target sin depender de
+  ningún `UserMute`. `unblockUser` no revive ningún mute borrado por este mecanismo.
+- **Concurrencia**: mismo criterio que bloqueo — el `UNIQUE(muter_id, muted_id)` más el
+  `catch` de `DataIntegrityViolationException` alcanzan para dos `mute` simultáneos entre
+  el mismo par; no se identificó ninguna carrera nueva mute-vs-block más allá de la ya
+  aceptada (y documentada) para follow-vs-block, porque mute no compite por ninguna fila
+  que block también escriba (salvo la limpieza unidireccional de arriba, que ocurre
+  dentro de la transacción de `blockUser` y por ende no tiene ventana propia).
+- **Deuda explícita (fuera de alcance)**: ocultar un post puntual sin silenciar a su
+  autor ("hide post"), silenciar una conversación puntual ("mute conversation"),
+  silenciar notificaciones, mute temporizado, mute de temas/topics, "amigos
+  cercanos"/audiencias personalizadas/círculos, preferencias de recomendación,
+  anti-spam, reporte automático al silenciar.
 
 ## Persistencia
 

@@ -26,6 +26,11 @@ public interface AvailabilityRepository extends JpaRepository<Availability, UUID
     // forma de reusar BlockPolicy aca sin volver esto N+1 -- una consulta
     // por candidato). El NOT EXISTS cubre ambas direcciones con un solo OR,
     // igual que BlockPolicy.isBlockedBetween.
+    // Fase 9.5: NOT EXISTS de user_mutes, UNILATERAL (solo :excludeUserId
+    // como muter_id) -- si A mutea B, B deja de aparecer como sugerencia
+    // para A, pero A sigue apareciendo normalmente para B (sin el OR
+    // inverso que si tiene el bloqueo de arriba). No borra la fila de
+    // availability de nadie, solo la excluye de este listado.
     @Query(value = """
             SELECT * FROM availabilities a
             WHERE a.intent = :intent
@@ -35,6 +40,10 @@ public interface AvailabilityRepository extends JpaRepository<Availability, UUID
                 SELECT 1 FROM user_blocks b
                 WHERE (b.blocker_id = :excludeUserId AND b.blocked_id = a.user_id)
                 OR (b.blocker_id = a.user_id AND b.blocked_id = :excludeUserId)
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM user_mutes m
+                WHERE m.muter_id = :excludeUserId AND m.muted_id = a.user_id
             )
             ORDER BY RANDOM()
             LIMIT :limit

@@ -312,10 +312,10 @@ respuesta del propio follow): `"NONE"` | `"REQUESTED"` | `"FOLLOWING"`.
   (reemplaza la limitación de Fase 9.1/9.2). Comentar/reaccionar sobre un post que dejó
   de ser visible (ej. te sacaron de sus followers) empieza a fallar con `404` —
   tratarlo igual que "post no encontrado", sin un mensaje especial.
-- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): silenciar/
-  mute, listas o círculos de audiencia personalizados, ocultar contadores de seguidores,
-  controles de privacidad de mensajería, expiración automática de solicitudes. (Bloqueo
-  de usuarios dejó de estar acá — ver la sección siguiente.)
+- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): listas o
+  círculos de audiencia personalizados, ocultar contadores de seguidores, controles de
+  privacidad de mensajería, expiración automática de solicitudes. (Bloqueo y silenciado
+  de usuarios dejaron de estar acá — ver las dos secciones siguientes.)
 
 ## Bloqueo de usuarios (Fase 9.4)
 
@@ -366,10 +366,59 @@ request/response/errores — acá solo la guía de UX.
   conversación específica cuando el envío falle con `403` (no hace falta chequear el
   estado de bloqueo por adelantado; el propio intento de envío ya lo revela), pero
   **no** debe ocultar ni la conversación ni los mensajes ya existentes.
-- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): mute
-  (silenciar sin bloquear), ocultar un post puntual sin bloquear a su autor, reporte
-  automático al bloquear, motivo de bloqueo visible, bloqueo temporizado, "amigos
-  cercanos"/audiencias personalizadas, bloqueo por dispositivo.
+- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): ocultar un
+  post puntual sin bloquear a su autor, reporte automático al bloquear, motivo de
+  bloqueo visible, bloqueo temporizado, "amigos cercanos"/audiencias personalizadas,
+  bloqueo por dispositivo. (Mute dejó de estar acá — ver la sección siguiente.)
+
+## Silenciar usuarios (Fase 9.5)
+
+Nuevo endpoint por par de usuarios: `POST/DELETE /api/users/{userId}/mute` +
+`GET /api/users/me/muted`. Ver `API_CONTRACT.md` §13 para el detalle completo de
+request/response/errores — acá solo la guía de UX.
+
+**Diferencia clave con Bloqueo, para no confundir los dos botones**: silenciar es
+**unilateral e invisible** — el otro usuario nunca se entera, sigue viendo tu contenido
+con normalidad, y puede seguir interactuando con vos sin ninguna restricción (seguirte,
+comentar, apoyar, escribirte). Silenciar a alguien **solo** cambia lo que **vos** ves en
+tu feed, discover, estados y disponibilidad — nunca corta accesos ni relaciones. Si el
+producto necesita "ya no quiero saber nada de esta persona, en ningún sentido", ese es
+Bloqueo (sección anterior), no esto.
+
+- **Botón de silenciar/dejar de silenciar en el perfil de otro usuario**: usar
+  `mutedByCurrentUser` (nuevo campo en `PublicUserProfileResponse`) para decidir cuál
+  mostrar — `true` → botón "Dejar de silenciar" (`DELETE .../mute`), `false`/ausente →
+  botón "Silenciar" (`POST .../mute`). Este botón puede convivir sin conflicto con el de
+  Bloqueo/Seguir en la misma pantalla — silenciar, bloquear y seguir son ejes
+  independientes entre sí (podés silenciar a alguien que segís, por ejemplo). **No
+  existe** ningún campo que diga "este usuario me silenció a mí" — a diferencia de
+  bloqueo, acá ni siquiera hay un `404` que lo insinúe: el perfil de alguien que te
+  silenció se ve exactamente igual que el de cualquier otra persona.
+- **Pantalla "Usuarios silenciados"** (nueva, típicamente junto a "Usuarios bloqueados"
+  en la misma sección de privacidad/ajustes): `GET /api/users/me/muted`, paginado, con
+  `{ userId, username, displayName, avatarUrl, mutedAt }` — sin email. Cada fila debería
+  ofrecer "Dejar de silenciar" (`DELETE /api/users/{userId}/mute`).
+- **Qué pasa al silenciar a alguien** (todo esto ocurre automáticamente en el backend, el
+  frontend solo necesita reflejarlo la próxima vez que pida esos datos):
+  - Deja de aparecer en tu feed, en discover, en tu feed de estados/presencia y en los
+    listados de disponibilidad ("modo compañía") — **solo para vos**. Vos seguís
+    apareciendo con total normalidad en todo lo suyo.
+  - **Nada más cambia.** Seguís siguiéndolo si ya lo seguías (y podés empezar a
+    seguirlo/dejar de seguirlo después, sin que el mute interfiera). Su perfil, sus
+    posts, comentarios, apoyo y chat funcionan exactamente igual que antes — entrar
+    directamente a su perfil (`GET /api/users/{userId}`) o a un post suyo (`GET
+    /api/posts/{postId}`) sigue mostrando todo con normalidad, aunque ese mismo post no
+    aparezca en tu feed.
+  - No recibís ningún efecto sobre notificaciones: seguís recibiendo notificaciones
+    suyas (follow, comentario, apoyo, reacción) exactamente igual que antes de
+    silenciarlo.
+- **Diferencia práctica para el usuario, en una frase**: bloquear es "cortar el
+  contacto"; silenciar es "dejar de verlo en mi feed sin que él lo note ni que cambie
+  nada más entre nosotros".
+- **Fuera de alcance de esta fase** (no implementar todavía en el frontend): ocultar un
+  post puntual sin silenciar a su autor ("hide post"), silenciar una conversación
+  puntual, silenciar notificaciones, mute temporizado, mute de temas/topics, "amigos
+  cercanos"/audiencias personalizadas/círculos, preferencias de recomendación.
 
 ## Endpoints disponibles
 
@@ -385,6 +434,7 @@ Resumen de superficie por dominio:
 | Follows | `/api/follows` | seguir/dejar de seguir (inmediato o solicitud según privacidad), listas, eliminar seguidor |
 | Follow Requests | `/api/follow-requests` | aceptar/rechazar/cancelar solicitudes, incoming/outgoing |
 | Blocking | `/api/users/{userId}/block`, `/api/users/me/blocked` | bloquear/desbloquear, lista de bloqueados propios |
+| Muting | `/api/users/{userId}/mute`, `/api/users/me/muted` | silenciar/dejar de silenciar (unilateral), lista de silenciados propios |
 | Statuses | `/api/statuses` | "estado de ánimo" efímero (24h) + reacciones |
 | Availability | `/api/availability` | "modo compañía" efímero (6h) |
 | Chat | `/api/conversations` | conversaciones 1:1, mensajes paginados |

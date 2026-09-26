@@ -1,6 +1,7 @@
 package com.byyourside.backend.notification;
 
 import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.comment.CommentRepository;
@@ -50,6 +51,9 @@ class NotificationControllerIntegrationTest {
     private UserBlockRepository userBlockRepository;
 
     @Autowired
+    private UserMuteRepository userMuteRepository;
+
+    @Autowired
     private AuthSessionRepository authSessionRepository;
 
     @Autowired
@@ -95,6 +99,7 @@ class NotificationControllerIntegrationTest {
         emailVerificationTokenRepository.deleteAll();
         authSessionRepository.deleteAll();
         userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");
