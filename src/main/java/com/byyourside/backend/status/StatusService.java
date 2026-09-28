@@ -141,7 +141,11 @@ public class StatusService {
         statusReactionRepository.save(reaction);
 
         if (isNewReaction) {
-            notificationService.notify(status.getUser(), actor, NotificationType.NEW_STATUS_REACTION, null);
+            // Backend Debt B3: statusId real, nunca reusando postId (los
+            // estados son un dominio separado de los posts) -- `status` ya
+            // esta cargado en este punto, sin query extra.
+            notificationService.notify(status.getUser(), actor, NotificationType.NEW_STATUS_REACTION,
+                    null, status.getId(), null);
         }
 
         long count = statusReactionRepository.countByStatusId(statusId);

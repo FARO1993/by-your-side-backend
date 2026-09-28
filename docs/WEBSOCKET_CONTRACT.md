@@ -126,17 +126,22 @@ en una conversación donde el usuario conectado es el destinatario.
   implementados.
 
 ### `/user/queue/notifications`
-Nueva notificación in-app (follow, comentario, apoyo a un post, reacción a un status).
-Emitido por `NotificationService.notify(...)`, llamado internamente desde `FollowService`,
-`CommentService`, `PostSupportService` y `StatusService`.
+Nueva notificación in-app (follow, comentario, respuesta a un post, reacción a un status,
+solicitud de follow recibida/aceptada). Emitido por `NotificationService.notify(...)`,
+llamado internamente desde `FollowService`, `FollowRequestService`, `CommentService`,
+`PostResponseService` y `StatusService`.
 
-**Payload** — exactamente la forma de `NotificationResponse` (ver `API_CONTRACT.md` §9):
+**Payload** — exactamente la forma de `NotificationResponse` (ver `API_CONTRACT.md` §9),
+**el mismo objeto que devuelve `GET /api/notifications`** — nunca un payload WS distinto
+del de REST:
 ```json
 {
   "id": "uuid",
   "actor": { "id": "uuid", "username": "...", "displayName": "...", "avatarUrl": "..." },
   "type": "NEW_FOLLOWER",
   "postId": "uuid o null",
+  "statusId": "uuid o null",
+  "followRequestId": "uuid o null",
   "read": false,
   "createdAt": "2026-09-25T14:30:00Z"
 }
@@ -144,11 +149,19 @@ Emitido por `NotificationService.notify(...)`, llamado internamente desde `Follo
 
 - Nunca se autonotifica (si `recipient.id == actor.id`, `notify()` corta antes de
   guardar/emitir — no debería poder pasar en la práctica, pero está protegido).
-- `type` es uno de `NEW_FOLLOWER | NEW_COMMENT | NEW_POST_RESPONSE | NEW_STATUS_REACTION`
-  (ver tabla de enums en `API_CONTRACT.md`). **Backend Debt B1**: `NEW_SUPPORT` fue
-  renombrado a `NEW_POST_RESPONSE` — representa cualquier `PostResponseType`, no solo el
-  soporte binario anterior. Cambio de contrato: un consumidor que compare contra el
-  string literal `"NEW_SUPPORT"` debe actualizarse.
+- `type` es uno de `NEW_FOLLOWER | NEW_COMMENT | NEW_POST_RESPONSE | NEW_STATUS_REACTION |
+  FOLLOW_REQUEST_RECEIVED | FOLLOW_REQUEST_ACCEPTED` (ver tabla de enums en
+  `API_CONTRACT.md`). **Backend Debt B1**: `NEW_SUPPORT` fue renombrado a
+  `NEW_POST_RESPONSE` — representa cualquier `PostResponseType`, no solo el soporte
+  binario anterior. Cambio de contrato: un consumidor que compare contra el string
+  literal `"NEW_SUPPORT"` debe actualizarse.
+- **Backend Debt B3**: `statusId` y `followRequestId` son campos nuevos (adición pura al
+  final del payload, no rompe consumidores existentes que ignoren campos desconocidos).
+  Cada `type` puebla como máximo uno de `postId`/`statusId`/`followRequestId` — ver la
+  tabla completa de qué campo corresponde a cada tipo en `API_CONTRACT.md` §9. No se
+  emite ningún evento WS nuevo para esto (`unread-count`, `read-one`, `read-all` no
+  tienen canal propio — REST sigue siendo la única vía para esas tres operaciones, ver
+  `FRONTEND_HANDOFF.md`).
 
 ## Cómo se resuelve el destinatario
 

@@ -1035,6 +1035,13 @@ el objetivo tiene el perfil en `PRIVATE` — este namespace es exclusivamente pa
 **gestionar** una solicitud ya creada (aceptar, rechazar, cancelar, listar). No hay un
 `POST /api/follow-requests` directo.
 
+**Acciones desde Novedades/notificaciones (Backend Debt B3)**: la notificación
+`FOLLOW_REQUEST_RECEIVED` incluye `followRequestId` (ver § 9) precisamente para que el
+frontend pueda ejecutar `accept`/`reject` directo desde ahí — pero siempre llamando a
+estos mismos endpoints. **No existe, ni debe crearse, un endpoint paralelo** tipo
+`POST /api/notifications/{id}/accept-follow` — `FollowRequestService` sigue siendo la
+única fuente de verdad sobre el trámite, la notificación es solo contexto/navegación.
+
 ### `FollowRequestResponse` (forma común)
 ```json
 { "requestId": "uuid", "otherUser": { /* UserSummary */ }, "createdAt": "...", "status": "PENDING" }
@@ -1124,7 +1131,9 @@ vencido) por cada usuario que sigo + el propio, orden `createdAt DESC`.
 Reacciona a un status. Si ya habías reaccionado, **reemplaza** el tipo de reacción
 anterior (no crea una segunda reacción — hay `UNIQUE(status_id, actor_id)` en DB).
 Notifica `NEW_STATUS_REACTION` al dueño del status solo si es tu **primera** reacción a
-ese status (cambiar el tipo de una reacción existente no vuelve a notificar).
+ese status (cambiar el tipo de una reacción existente no vuelve a notificar). **Backend
+Debt B3**: esa notificación incluye `statusId` (nunca `postId`, ver § 9) apuntando a
+`status.getId()` — sin query extra, ya que el status está cargado en este mismo método.
 - **Body** (`ReactToStatusRequest`): `{ "type": "WITH_YOU | WANT_TO_TALK | HERE_READING | NOT_ALONE" }`
 - **Response 200**: `StatusResponse` actualizado.
 - **Errores**: `404 Not Found` si el status no existe, **o si existe un bloqueo entre el
@@ -1278,44 +1287,101 @@ Envía un mensaje. Además de persistirlo, lo empuja por WebSocket al destinatar
 
 ## 9. Notifications (`/api/notifications`) — requiere autenticación
 
-Las notificaciones se generan internamente desde otros módulos (follow, comment, support,
-status reaction) — no hay endpoint para crearlas manualmente.
+Las notificaciones se generan internamente desde otros módulos (follow, comment, post
+response, status reaction) — no hay endpoint para crearlas manualmente.
 
 - **Bloqueo (Fase 9.4)**: una guarda centralizada en `NotificationService.notify()`
   suprime cualquier notificación **nueva** entre dos usuarios con un bloqueo activo (en
   cualquier dirección) — en la práctica esto ya es redundante con que la acción que
-  dispararía la notificación (follow, comentario, apoyo, reacción de estado) ya se
-  rechaza antes de llegar a `notify()`, pero queda como defensa en profundidad centralizada
-  en un solo lugar en vez de duplicada en cada caller. **No afecta notificaciones ya
-  existentes** — bloquear a alguien nunca borra notificaciones históricas generadas
-  antes del bloqueo, sólo evita que se generen nuevas.
-- **Mute (Fase 9.5) — decisión explícita, sin efecto**: silenciar a alguien **no**
-  suprime sus notificaciones. `NotificationService.notify()` no chequea mute en
-  absoluto — seguís recibiendo notificaciones de follow/comentario/apoyo/reacción de
-  quien silenciaste, exactamente igual que si no lo hubieras silenciado. Esto es
-  "notification preferences", una semántica distinta y explícitamente fuera de alcance
-  de esta fase (ver § 13) — no una omisión.
+  dispararía la notificación (follow, comentario, respuesta a un post, reacción de
+  estado) ya se rechaza antes de llegar a `notify()`, pero queda como defensa en
+  profundidad centralizada en un solo lugar en vez de duplicada en cada caller. **No
+  afecta notificaciones ya existentes** — bloquear a alguien nunca borra notificaciones
+  históricas generadas antes del bloqueo, sólo evita que se generen nuevas.
+- **Mute (Fase 9.5) — decisión explícita, sin efecto, reconfirmada en Backend Debt B3**:
+  silenciar a alguien **no** suprime sus notificaciones. `NotificationService.notify()`
+  no chequea mute en absoluto — seguís recibiendo notificaciones de
+  follow/comentario/respuesta/reacción de quien silenciaste, exactamente igual que si no
+  lo hubieras silenciado. Esto es "notification preferences", una semántica distinta y
+  explícitamente fuera de alcance de esta fase (ver § 13) — no una omisión.
+- **WebSocket**: cada notificación nueva se empuja por `/user/queue/notifications` con el
+  **mismo** `NotificationResponse` que expone `GET /api/notifications` — un único DTO
+  para REST y WS, nunca payloads divergentes. Ver `WEBSOCKET_CONTRACT.md`.
+
+### `NotificationResponse` (forma común)
+```json
+{
+  "id": "uuid",
+  "actor": { /* UserSummary — quien generó la acción */ },
+  "type": "NEW_FOLLOWER",
+  "postId": "uuid o null",
+  "statusId": "uuid o null",
+  "followRequestId": "uuid o null",
+  "read": false,
+  "createdAt": "..."
+}
+```
+**Cambio de contrato (Backend Debt B3)**: `statusId` y `followRequestId` son campos
+nuevos (adición pura al final, no rompe contrato). Cada `NotificationType` puebla **como
+máximo uno** de los tres campos de referencia (`postId`/`statusId`/`followRequestId`) —
+nunca se reusa `postId` para un status, ni viceversa:
+
+| `type` | Campo poblado | Notas |
+|---|---|---|
+| `NEW_FOLLOWER` | ninguno | |
+| `NEW_COMMENT` | `postId` | el post comentado |
+| `NEW_POST_RESPONSE` | `postId` | el post respondido |
+| `NEW_STATUS_REACTION` | `statusId` | el status reaccionado — **nunca** `postId` |
+| `FOLLOW_REQUEST_RECEIVED` | `followRequestId` | el trámite recién creado, `PENDING` en ese momento |
+| `FOLLOW_REQUEST_ACCEPTED` | `followRequestId` | el trámite recién aceptado (contexto, ya no hay acción posible sobre él) |
+
+**Referencias sin FK — pueden apuntar a un recurso ya resuelto/vencido**: ni `postId`
+(sin cambios), ni `statusId`, ni `followRequestId` tienen foreign key en la base (ver
+`V13`, mismo criterio que `postId` desde `V1`). Ninguno de los tres recursos se borra
+nunca (`Post` es soft-delete, `Status` solo expira, `FollowRequest` conserva
+ACCEPTED/REJECTED/CANCELLED como historial) — una notificación vieja puede señalar
+legítimamente a un post ya `REMOVED`, un status ya vencido, o un `FollowRequest` ya
+resuelto. La API nunca rompe deserializando estos casos; el endpoint del recurso
+referenciado responde según sus propias reglas (ej. `POST /api/follow-requests/{id}/accept`
+sobre un trámite ya no `PENDING` → `409 Conflict`, igual que si se hubiera llegado ahí
+por cualquier otra vía). El frontend no debe asumir que el recurso referenciado sigue en
+el mismo estado que cuando se generó la notificación.
 
 ### `GET /api/notifications`
 - **Query params**: `page` (default `0`), `size` (default `20`).
-- **Response 200**: `Page<NotificationResponse>`, orden `createdAt DESC`.
-  ```json
-  {
-    "id": "uuid",
-    "actor": { /* UserSummary — quien generó la acción */ },
-    "type": "NEW_FOLLOWER",
-    "postId": "uuid o null (null para NEW_FOLLOWER)",
-    "read": false,
-    "createdAt": "..."
-  }
-  ```
+- **Response 200**: `Page<NotificationResponse>` (envelope completo de Spring Data
+  `Page`: `content`, `totalElements`, `totalPages`, `number`, `size`, `last`, etc.).
+- **Orden estable (Backend Debt B3)**: `createdAt DESC, id DESC` — el desempate por `id`
+  fija un orden determinista incluso si dos notificaciones se crean con el mismo
+  timestamp (mismo milisegundo), evitando que un empate se reordene entre página y
+  página bajo paginación por offset.
+- **Paginación por offset, no cursor**: se mantiene `Page`/`Pageable` (ya establecido en
+  toda la API) — no se introdujo cursor pagination. Ver `FRONTEND_HANDOFF.md` § Websocket
+  y notificaciones para la estrategia recomendada ante notificaciones nuevas llegando por
+  WebSocket mientras el usuario pagina.
+
+### `PATCH /api/notifications/{notificationId}/read` (Backend Debt B3)
+Marca **una** notificación puntual como leída.
+- **Response 200**: `NotificationResponse` actualizado (`read: true`).
+- **Ownership**: la query de mark-one incluye el filtro por `recipientId` del JWT en el
+  mismo `WHERE` (nunca un `findById()` + chequeo aparte) — no existe forma de marcar una
+  notificación ajena.
+- **Errores**: `404 Not Found` — la notificación no existe **o** no es del usuario
+  autenticado; ambos casos son indistinguibles desde el status code (misma query,
+  mismo resultado para los dos — no hay un `403` que confirme que la notificación existe
+  pero es de otro usuario).
+- **Idempotente**: marcar una notificación ya leída no falla — responde `200` igual, sin
+  volver a escribir en la fila.
 
 ### `GET /api/notifications/unread-count`
-- **Response 200**: `{ "count": 3 }` — objeto plano `Map<String, Long>`, no un DTO tipado.
+- **Response 200**: `{ "count": 3 }` — objeto plano `Map<String, Long>`, no un DTO
+  tipado. Consulta real (`COUNT` agregado), no un contador denormalizado — siempre
+  refleja el estado actual, incluyendo después de `PATCH .../read` o `.../read-all`.
 
 ### `PATCH /api/notifications/read-all`
-Marca **todas** las notificaciones no leídas del usuario como leídas. No existe endpoint
-para marcar una sola notificación como leída individualmente.
+Marca **todas** las notificaciones no leídas del usuario como leídas — `UPDATE` bulk en
+una sola sentencia (no itera fila por fila). Sigue siendo el único mecanismo para marcar
+en lote; `PATCH .../{id}/read` (arriba) es puntual, sin reemplazar a este.
 - **Response**: `204 No Content`.
 
 ---

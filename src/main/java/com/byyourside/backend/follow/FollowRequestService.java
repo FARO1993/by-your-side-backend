@@ -50,7 +50,12 @@ public class FollowRequestService {
             followRepository.save(Follow.builder().follower(requester).following(target).build());
         }
 
-        notificationService.notify(requester, target, NotificationType.FOLLOW_REQUEST_ACCEPTED, null);
+        // Backend Debt B3: followRequestId para contexto (no imprescindible
+        // -- ya no hay una accion pendiente sobre este tramite, ver
+        // BACKEND_ARCHITECTURE.md), sin costo extra ya que `request` ya
+        // esta cargado en este punto.
+        notificationService.notify(requester, target, NotificationType.FOLLOW_REQUEST_ACCEPTED,
+                null, null, request.getId());
 
         request.setStatus(FollowRequestStatus.ACCEPTED);
         request.setRespondedAt(Instant.now());
