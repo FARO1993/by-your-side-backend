@@ -34,8 +34,14 @@ com.byyourside.backend
 ├── companion       Rediseño del dominio Companion (Backend Debt B4B, ver diseño B4A).
 │                   B4B.1: CompanionNeed, NeedType (LISTEN_TO_ME/TALK/GET_OPINION/
 │                   DISTRACTION/JUST_COMPANY) — "necesito compañía ahora", 2hs, NUNCA
-│                   expuesto públicamente (solo owner vía /mine). Sin Offering,
-│                   sin matching, sin CompanionMatch todavía — eso es B4B.2+
+│                   expuesto públicamente (solo owner vía /mine).
+│                   B4B.2: CompanionOffering, OfferingType (LISTEN/TALK/DISTRACT) —
+│                   "cómo puedo acompañar ahora", 6hs, fuente de verdad del nuevo
+│                   dominio (availabilities legacy sigue existiendo en paralelo, ver
+│                   § Companion Offering). CompanionCompatibility (matriz estática
+│                   Need→Offering) + búsqueda por tipo/compatible. Sin matching
+│                   inteligente, sin CompanionMatch, sin scoring todavía — eso queda
+│                   fuera de alcance a propósito (decisión B4A #12)
 ├── block           UserBlock, BlockPolicy (isBlockedBetween, punto central reutilizado
 │                   por profile/post/follow/chat/notification/status/discover/
 │                   availability), BlockService (bloqueo + limpieza transaccional) — Fase 9.4
@@ -95,6 +101,7 @@ User (users)
  ├─ 1:N → StatusReaction como actor (status_reactions.actor_id)
  ├─ 1:N → Availability (availabilities.user_id) — LEGACY, ver Backend Debt B4B.3
  ├─ 1:N → CompanionNeed (companion_needs.user_id) — Backend Debt B4B.1
+ ├─ 1:N → CompanionOffering (companion_offerings.user_id) — Backend Debt B4B.2
  ├─ 1:N → Conversation como userA / userB (conversations.user_a_id / user_b_id)
  ├─ 1:N → Message como sender (messages.sender_id)
  ├─ 1:N → EmailVerificationToken (email_verification_tokens.user_id)
@@ -128,6 +135,11 @@ CompanionNeed (companion_needs, Backend Debt B4B.1) — N:1 → User, `type` (`N
               activo por usuario" está garantizada **a nivel DB**, no solo por el orden
               delete-then-insert del service — ver § "Companion Need (Backend Debt
               B4B.1)" más abajo. Nunca expuesto vía API salvo al propio owner.
+CompanionOffering (companion_offerings, Backend Debt B4B.2) — N:1 → User, `type`
+              (`OfferingType`), UNIQUE(user_id) — mismo criterio que CompanionNeed.
+              Fuente de verdad del **nuevo** dominio Companion desde este PR;
+              `availabilities` sigue siendo la fuente de verdad exclusiva del contrato
+              legacy — ver § "Companion Offering (Backend Debt B4B.2)" más abajo.
 Conversation (conversations) — N:1 → User (userA), N:1 → User (userB), UNIQUE(user_a_id, user_b_id)
                                  (userA/userB en orden canónico por UUID string, para no duplicar
                                  la conversación sin importar quién la inició)
@@ -946,6 +958,70 @@ ahora", 2hs, nunca expuesto públicamente. Ver `API_CONTRACT.md` § 7bis para el
   real de Testcontainers) — verifica que ambas responden `200`, que nunca quedan dos
   filas, y que el Need final queda en un estado válido y consultable.
 
+## Companion Offering (Backend Debt B4B.2)
+
+Segundo PR del rediseño del dominio Companion (ver diseño B4A) — "cómo puedo acompañar
+ahora", 6hs. Ver `API_CONTRACT.md` § 7ter para el contrato completo (CRUD, búsqueda por
+tipo, `/compatible`).
+
+- **`UNIQUE(user_id)` + `CompanionOfferingWriter` — mismo patrón exacto que
+  `CompanionNeed`/`CompanionNeedWriter` (B4B.1)**: `UNIQUE(user_id)` a nivel DB (V15),
+  bean separado con `@Transactional(propagation = REQUIRES_NEW)`, orden de flush
+  explícito (`deleteByUserId` + `flush()` antes de `saveAndFlush` del reemplazo — mismo
+  motivo: el orden de flush por defecto de Hibernate ejecuta inserts antes que deletes) y
+  reintento acotado (`MAX_ATTEMPTS = 3`) ante `DataIntegrityViolationException`. **No se
+  extrajo una abstracción genérica compartida entre `CompanionNeedWriter` y
+  `CompanionOfferingWriter`** a propósito — el único código en común es el esqueleto
+  delete+flush+saveAndFlush; generalizarlo sobre el tipo de entidad/repositorio agregaría
+  genéricos e indirección por ahorrar ~10 líneas duplicadas, empeorando la legibilidad de
+  dos writers ya de por sí triviales de leer por separado.
+- **Test de concurrencia real** (`CompanionOfferingControllerIntegrationTest.
+  shouldNeverLeaveTwoOfferings_whenTwoPutRequestsRaceConcurrently`): mismo diseño que el
+  de `CompanionNeed` — dos `PUT` concurrentes de verdad contra el Postgres real de
+  Testcontainers, verifica `200`/`200`, `count() == 1`, y una Offering final válida.
+- **Búsqueda por tipo — sin N+1, a diferencia de la legacy**:
+  `CompanionOfferingRepository.findRandomCandidatesByType` es una query nativa con `JOIN`
+  directo a `users`, proyectada a `CompanionCandidateProjection` (interfaz con getters
+  `getUserId/getUsername/getDisplayName/getAvatarUrl/getOfferingType/getExpiresAt`,
+  mapeados por Spring Data desde los alias de columna de la query). Esto evita el N+1
+  latente de `AvailabilityRepository.findRandomAvailable` (legacy): esa query devuelve la
+  entidad `Availability` completa con `user` `LAZY`, y `AvailabilityService.toResponse`
+  dispara un lazy-load de `User` por cada fila del resultado al armar la respuesta (acotado
+  por el `LIMIT` de 10, pero N+1 real). No se tocó la legacy en este PR (fuera de alcance),
+  pero el patrón nuevo es deliberadamente mejor.
+  Mismo `ORDER BY RANDOM() LIMIT :limit` (MVP a propósito, sin ranking/paginación/scoring),
+  mismo `NOT EXISTS` de bloqueo bilateral y de mute unilateral que la query legacy.
+- **Sin filtro de `ProfileVisibility`/`Follow` en la búsqueda (decisión B4A #3)**: activar
+  un Offering es consentimiento específico para aparecer en superficies de Companion,
+  incluso con perfil `PRIVATE` y sin accepted follower — nunca equivale a un accepted
+  follower, nunca desbloquea perfil completo/bio/posts/status. Verificado con test
+  explícito (`shouldAppearInSearch_whenPrivateProfileWithoutFollow_butActiveOffering`).
+  `ProfileAccessPolicy` no se tocó ni se reutilizó acá a propósito.
+- **`CompanionCompatibility` — matriz estática Need→Offering (decisión B4A #4/#12)**:
+  clase de dominio pequeña (`Map<NeedType, OfferingType>` inmutable, un solo método
+  estático `compatibleOfferingFor`), sin Spring, sin DB, sin scoring/pesos/IA. Testeada de
+  forma aislada (`CompanionCompatibilityTest`, 5 casos) sin depender de su implementación
+  interna. Mapeo aprobado: `LISTEN_TO_ME→LISTEN`, `TALK→TALK`, `GET_OPINION→TALK`,
+  `DISTRACTION→DISTRACT`, `JUST_COMPANY→LISTEN` (`JUST_COMPANY` usa `LISTEN` como
+  compatibilidad inicial a falta de un `OfferingType` equivalente — decisión B4A #2, a
+  revisar con evidencia de producto más adelante, no antes).
+- **`GET /api/companion/offering/compatible` — sin Need activo**: `200` con lista vacía,
+  nunca `404` — no hay ningún recurso inexistente, solo ausencia de un criterio de
+  búsqueda (mismo espíritu que `/mine` devolviendo `null` en vez de `404`). El `Need` del
+  usuario se lee internamente (`CompanionNeedRepository`, mismo paquete) solo para resolver
+  el `OfferingType` compatible — **nunca viaja en la respuesta**, ni el propio ni el de
+  ningún candidato (decisión B4A #10, Need siempre privado).
+- **Source of truth — wording exacto (importante, no generalizar de más)**:
+  `companion_offerings` es la fuente de verdad del **dominio Companion nuevo** desde este
+  PR. `availabilities` sigue siendo, sin cambios, la fuente de verdad exclusiva del
+  contrato **legacy** `/api/availability/**` — `ChatService` sigue consultando
+  `Availability` (no tocado en este PR). Ambas tablas **coexisten temporalmente**: ningún
+  código lee las dos para responder la misma operación. `companion_offerings` **todavía
+  NO es** la única fuente de verdad global de disponibilidad — esa unificación (adapters
+  de `/api/availability/**` sobre `CompanionOfferingService`, `ChatService` repuntado, y
+  el retiro de `availabilities`) es exactamente el alcance de Backend Debt B4B.3, no de
+  este PR.
+
 ## Persistencia
 
 - **PostgreSQL** vía Spring Data JPA / Hibernate. `ddl-auto: validate` — el esquema
@@ -978,6 +1054,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V12__add_post_response_types.sql` | `post_supports` → `post_responses` (`RENAME` in-place), `post_responses.type`/`updated_at`, migra `notifications.type = 'NEW_SUPPORT'` → `'NEW_POST_RESPONSE'` |
 | `V13__add_notification_resource_references.sql` | `notifications.status_id`, `notifications.follow_request_id` — ambas nullable, sin FK |
 | `V14__add_companion_needs.sql` (Backend Debt B4B.1) | `companion_needs` — primera tabla del nuevo dominio Companion (ver diseño B4A), con `UNIQUE(user_id)`: garantiza a nivel DB "máximo un Need activo por usuario" (B4B.1 no conserva historial, el Need anterior se reemplaza). Sin índices adicionales — el índice que crea la propia constraint `UNIQUE` ya resuelve la única query real (lookup por `user_id`); a diferencia de `V3` (`availabilities`, cero índices y sin ninguna garantía de unicidad) |
+| `V15__add_companion_offerings.sql` (Backend Debt B4B.2) | `companion_offerings` — segunda tabla del dominio Companion, mismo `UNIQUE(user_id)` que `companion_needs`. A diferencia de `V14`, agrega `INDEX(type, expires_at)`: justificado porque acá sí hay una query real que filtra por `type` + `expires_at` sin pasar por `user_id` (`findRandomCandidatesByType`) — no se duplicó un índice simple sobre `user_id` (ya lo crea el `UNIQUE`) |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`
@@ -1069,7 +1146,8 @@ un problema actual, pero es una limitación a tener en cuenta antes de escalar.
 
 - **Integration tests** (`src/test/java/.../*ControllerIntegrationTest.java` y afines)
   para: admin, auth, availability, chat, comment, `companion.CompanionNeedControllerIntegrationTest`
-  (Backend Debt B4B.1), follow (`FollowControllerIntegrationTest`,
+  (Backend Debt B4B.1), `companion.CompanionOfferingControllerIntegrationTest` +
+  `CompanionCompatibilityTest` (Backend Debt B4B.2), follow (`FollowControllerIntegrationTest`,
   `FollowRequestIntegrationTest`), notification, post (`PostControllerIntegrationTest`,
   `PostPrivacyIntegrationTest`), report, status, user (`UserControllerIntegrationTest`,
   `ProfilePrivacyIntegrationTest`), `block.BlockIntegrationTest` (Fase 9.4), más
