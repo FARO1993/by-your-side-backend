@@ -9,7 +9,7 @@ import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.notification.NotificationRepository;
-import com.byyourside.backend.support.PostSupportRepository;
+import com.byyourside.backend.postresponse.PostResponseRepository;
 import com.byyourside.backend.user.ProfileVisibility;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -78,7 +78,7 @@ class PostPrivacyIntegrationTest {
     private CommentRepository commentRepository;
 
     @Autowired
-    private PostSupportRepository postSupportRepository;
+    private PostResponseRepository postResponseRepository;
 
     @Autowired
     private NotificationRepository notificationRepository;
@@ -99,7 +99,7 @@ class PostPrivacyIntegrationTest {
     void setUp() throws Exception {
         notificationRepository.deleteAll();
         commentRepository.deleteAll();
-        postSupportRepository.deleteAll();
+        postResponseRepository.deleteAll();
         postRepository.deleteAll();
         followRequestRepository.deleteAll();
         followRepository.deleteAll();
@@ -385,7 +385,7 @@ class PostPrivacyIntegrationTest {
                         .header("Authorization", "Bearer " + mainUserToken))
                 .andExpect(status().isNotFound());
 
-        org.assertj.core.api.Assertions.assertThat(postSupportRepository.count()).isZero();
+        org.assertj.core.api.Assertions.assertThat(postResponseRepository.count()).isZero();
     }
 
     @Test

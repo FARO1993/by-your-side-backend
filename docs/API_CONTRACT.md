@@ -71,7 +71,8 @@ observable) no requieren tocar esta documentación.
 | `CompanionIntent` | `TALK`, `DISTRACTION`, `WATCH_TOGETHER`, `MUSIC`, `LAUGH`, `JUST_COMPANY` | Modo compañía (availability) |
 | `StatusMood` | `WELL`, `NEED_DISTRACTION`, `DIFFICULT_DAY`, `NEED_TO_TALK`, `HERE_FOR_SOMEONE` | Estados de ánimo |
 | `StatusReactionType` | `WITH_YOU`, `WANT_TO_TALK`, `HERE_READING`, `NOT_ALONE` | Reacciones a un estado |
-| `NotificationType` | `NEW_FOLLOWER`, `NEW_COMMENT`, `NEW_SUPPORT`, `NEW_STATUS_REACTION` | Notificaciones (in-app y WebSocket) |
+| `PostResponseType` (Backend Debt B1) | `WITH_YOU`, `NOT_ALONE`, `HUG`, `READING`, `TELL_ME_MORE`, `LISTENING` | Responder a un post (§3). Dominio independiente de `StatusReactionType` — nunca se comparan ni convierten entre sí, aunque compartan alguna etiqueta |
+| `NotificationType` | `NEW_FOLLOWER`, `NEW_COMMENT`, `NEW_POST_RESPONSE`, `NEW_STATUS_REACTION`, `FOLLOW_REQUEST_RECEIVED`, `FOLLOW_REQUEST_ACCEPTED` | Notificaciones (in-app y WebSocket). **Backend Debt B1**: `NEW_SUPPORT` fue renombrado a `NEW_POST_RESPONSE` — representa cualquier `PostResponseType`, no solo el soporte binario anterior |
 | `ReportTargetType` | `POST`, `COMMENT`, `USER` | Crear un reporte |
 | `ReportReason` | `SELF_HARM_RISK`, `HARASSMENT`, `SPAM`, `HATE_SPEECH`, `OTHER` | Crear un reporte |
 | `ReportStatus` | `PENDING`, `REVIEWED`, `ACTION_TAKEN`, `DISMISSED` | Resolver un reporte |
@@ -675,18 +676,32 @@ Sube un avatar a Cloudinary y actualiza el perfil propio.
   "updatedAt": "...",
   "followedByCurrentUser": false,
   "supportCount": 3,
-  "supportedByCurrentUser": false
+  "supportedByCurrentUser": false,
+  "presenceCount": 2,
+  "listeningCount": 1,
+  "currentUserResponseType": "HUG"
 }
 ```
 `author` es un `UserSummary` (siempre esta misma forma en toda la API: `id`, `username`,
 `displayName`, `avatarUrl` — nunca incluye `email` ni `bio`).
+
+**Cambio de contrato (Backend Debt B1)**: `presenceCount`, `listeningCount` y
+`currentUserResponseType` son campos nuevos (adición pura al final, no rompe contrato).
+`currentUserResponseType` viaja en `null` si el usuario autenticado no respondió a este
+post — nunca un string vacío. `supportCount`/`supportedByCurrentUser` **se conservan por
+compatibilidad temporal** (LEGACY) — dejan de ser una tabla/concepto binario separado y
+pasan a derivarse de los mismos datos: `supportCount = presenceCount + listeningCount`,
+`supportedByCurrentUser = currentUserResponseType != null`. Nunca dos fuentes de verdad:
+ambos pares de campos salen del mismo conteo. Ver § "Respuestas a un post" más abajo para
+el detalle completo (reemplaza el "apoyo" binario anterior).
 
 ### `POST /api/posts`
 - **Body** (`CreatePostRequest`):
   ```json
   { "content": "máx 2000 chars, obligatorio", "visibility": "PUBLIC | FOLLOWERS_ONLY | PRIVATE (opcional, default PUBLIC)" }
   ```
-- **Response 201**: `PostResponse` recién creado (`supportCount: 0`, `supportedByCurrentUser: false`).
+- **Response 201**: `PostResponse` recién creado (`presenceCount: 0`, `listeningCount: 0`,
+  `currentUserResponseType: null`, `supportCount: 0`, `supportedByCurrentUser: false`).
 
 ### `GET /api/posts/feed`
 Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt DESC`.
@@ -736,8 +751,9 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
 ### `PATCH /api/posts/{postId}`
 Solo el autor puede editar. Campos opcionales (solo se aplican los no-null).
 - **Body** (`UpdatePostRequest`): `{ "content": "máx 2000 (opcional)", "visibility": "... (opcional)" }`
-- **Response 200**: `PostResponse` actualizado (el `supportCount`/`supportedByCurrentUser`
-  se recalculan reales, no se resetean).
+- **Response 200**: `PostResponse` actualizado (`presenceCount`/`listeningCount`/
+  `currentUserResponseType`, y los legacy `supportCount`/`supportedByCurrentUser`, se
+  recalculan reales — editar el post nunca resetea las respuestas que ya tenía).
 - **Errores**: `403 Forbidden` si no sos el autor. `404 Not Found` si no existe.
 
 ### `DELETE /api/posts/{postId}`
@@ -746,25 +762,84 @@ para `MODERATOR`/`ADMIN`.
 - **Response**: `204 No Content`.
 - **Errores**: `403 Forbidden` (ni autor ni moderador/admin), `404 Not Found`.
 
-### `POST /api/posts/{postId}/support`
-Da "apoyo" (equivalente a un like) al post. Dispara notificación `NEW_SUPPORT` al autor
-(salvo que te apoyes a vos mismo, en cuyo caso no se notifica).
-- **Response 201** (`SupportSummaryResponse`): `{ "postId": "uuid", "supportCount": 4, "supportedByCurrentUser": true }`
-- **Errores**: `409 Conflict` si ya habías apoyado ese post. `404 Not Found` si el post no
-  existe, o si existe pero no es visible para quien pregunta (mismo criterio de
-  visibilidad que `GET /api/posts/{postId}`, incluyendo perfil `PRIVATE` del autor,
-  Fase 9.1, **y bloqueo bilateral, Fase 9.4**) — no se puede apoyar un post que no se
-  podría ver. **Mute (Fase 9.5) no afecta esta ruta** — silenciar al autor no impide
-  apoyar su post, mismo criterio que comentar (ver § 4).
+### Respuestas a un post (Backend Debt B1) — reemplaza el "apoyo" binario anterior
 
-### `DELETE /api/posts/{postId}/support`
-Quita el apoyo previamente dado.
-- **Response 200**: `SupportSummaryResponse` (`supportedByCurrentUser: false`).
-- **Errores**: `404 Not Found` — post inexistente, o no habías apoyado ese post
-  (mismo status code para ambos casos, mensaje distinto).
-- **Nota (Fase 9.4)**: **no** revalida bloqueo — igual que editar/borrar tu propio
-  comentario, quitar un apoyo que ya diste es gestionar algo tuyo, no crear una
-  interacción nueva. Sigue andando aunque exista un bloqueo con el autor del post.
+El frontend ofrece 6 respuestas posibles a un post, agrupadas en 2 categorías
+conceptuales (la categoría **no se persiste aparte** — se deriva del `type`, ver
+`PostResponseType.isPresence()/isListening()`):
+
+| Categoría | Valores |
+|---|---|
+| **PRESENCE** | `WITH_YOU`, `NOT_ALONE`, `HUG` |
+| **LISTENING** | `READING`, `TELL_ME_MORE`, `LISTENING` |
+
+Una sola respuesta **activa** por usuario/post (`UNIQUE(post_id, user_id)` en DB) — elegir
+otro tipo actualiza esa misma fila, nunca crea una segunda. **El autor no puede responder
+a su propio post** (`400 Bad Request`, en los 4 endpoints de esta sección).
+
+### `PUT /api/posts/{postId}/response`
+Crea tu respuesta a este post, o cambia el tipo de la que ya tenías (upsert real).
+- **Body** (`CreatePostResponseRequest`): `{ "type": "WITH_YOU | NOT_ALONE | HUG | READING | TELL_ME_MORE | LISTENING" }`
+- **Response 200** (`PostResponseSummaryResponse`):
+  ```json
+  { "postId": "uuid", "type": "HUG", "presenceCount": 3, "listeningCount": 1, "supportCount": 4, "supportedByCurrentUser": true }
+  ```
+- **Semántica** (siempre `200`, nunca `201` — es un upsert, no siempre una creación):
+  - Sin respuesta previa → crea la fila. Dispara notificación `NEW_POST_RESPONSE` al autor
+    (tu **primera** respuesta a este post).
+  - Respuesta previa del **mismo** tipo → no-op idempotente, sin notificar de nuevo.
+  - Respuesta previa de **otro** tipo → `UPDATE` de esa misma fila, sin notificar (cambiar
+    de tipo no es una respuesta nueva).
+- **Errores**: `400 Bad Request` si sos el autor del post. `404 Not Found` si el post no
+  existe o no es visible para vos (mismo criterio que `GET /api/posts/{postId}`,
+  incluyendo perfil `PRIVATE` del autor y bloqueo bilateral — ver `PostAccessPolicy` en
+  `BACKEND_ARCHITECTURE.md`). **Mute no afecta esta ruta** — si podés acceder
+  directamente al post, podés responder, sin importar si silenciaste al autor.
+
+### `DELETE /api/posts/{postId}/response`
+Elimina tu respuesta a este post (sin importar su tipo actual).
+- **Response 200**: `PostResponseSummaryResponse` con `type: null`.
+- **Idempotente** — si no tenías ninguna respuesta, `200` igual (no `404`), reflejando el
+  mismo estado sin cambios. No dispara ninguna notificación. Volver a responder más tarde
+  (`PUT` de nuevo) es una respuesta **nueva** a todos los efectos, incluyendo notificación.
+- **Errores**: `404 Not Found` solo si el post en sí no existe.
+
+### `POST /api/posts/{postId}/support` (LEGACY, ver decisión más abajo)
+Equivale a `PUT .../response` con `type: WITH_YOU`, **preservando el contrato original
+exacto** de antes de esta fase: a diferencia del endpoint nuevo, este **sí** es `409` (no
+upsert) si ya había cualquier respuesta propia — para no sorprender a un consumidor que ya
+integraba contra ese comportamiento. Dispara notificación `NEW_POST_RESPONSE` (antes
+`NEW_SUPPORT`) solo en la creación.
+- **Response 201** (`PostResponseSummaryResponse`, mismo shape que el endpoint nuevo).
+- **Errores**: `400 Bad Request` si sos el autor (regla nueva de esta fase, ver más
+  abajo). `409 Conflict` si ya habías respondido (con cualquier tipo). `404 Not Found` si
+  el post no existe o no es visible (mismo criterio que arriba).
+
+### `DELETE /api/posts/{postId}/support` (LEGACY)
+Equivale a `DELETE .../response`, preservando el contrato original: a diferencia del
+endpoint nuevo (idempotente), este **sigue siendo `404`** si no habías respondido — mismo
+comportamiento exacto que antes de esta fase.
+- **Response 200**: `PostResponseSummaryResponse` con `type: null`.
+- **Errores**: `404 Not Found` — post inexistente, o no habías respondido (mismo status
+  code para ambos casos, mensaje distinto).
+
+**Una sola fuente de verdad**: los 4 endpoints de arriba leen/escriben la misma fila
+(`post_responses`, antes `post_supports`) a través de un único `PostResponseService` — no
+existen dos tablas ni dos repositorios. Preferir `PUT`/`DELETE /response` en integraciones
+nuevas; `/support` queda documentado como **legacy/deprecated**, mantenido temporalmente
+por compatibilidad.
+
+**⚠️ Cambio de comportamiento (Backend Debt B1) — self-response ahora rechazada en TODOS
+los endpoints, incluido el legacy**: antes de esta fase, `POST /support` no validaba
+autoría — un usuario podía apoyar su propio post. Eso ahora es `400 Bad Request` en los 4
+endpoints (nuevo y legacy), sin excepción. Cualquier integración existente que dependiera
+de auto-apoyarse debe actualizarse.
+
+**Migración de datos históricos**: la tabla `post_supports` fue evolucionada in-place a
+`post_responses` (`ALTER TABLE ... RENAME`, no una tabla nueva con copia de filas) —
+conserva `id`/`created_at` originales. Todo registro histórico (que antes solo
+representaba presencia binaria) recibió `type = 'WITH_YOU'`. Ver
+`V12__add_post_response_types.sql` y `BACKEND_ARCHITECTURE.md`.
 
 ---
 

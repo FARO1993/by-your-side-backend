@@ -25,7 +25,7 @@ import com.byyourside.backend.status.Status;
 import com.byyourside.backend.status.StatusMood;
 import com.byyourside.backend.status.StatusReactionRepository;
 import com.byyourside.backend.status.StatusRepository;
-import com.byyourside.backend.support.PostSupportRepository;
+import com.byyourside.backend.postresponse.PostResponseRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -94,7 +94,7 @@ class MuteIntegrationTest {
     private CommentRepository commentRepository;
 
     @Autowired
-    private PostSupportRepository postSupportRepository;
+    private PostResponseRepository postResponseRepository;
 
     @Autowired
     private StatusRepository statusRepository;
@@ -144,7 +144,7 @@ class MuteIntegrationTest {
         statusReactionRepository.deleteAll();
         statusRepository.deleteAll();
         commentRepository.deleteAll();
-        postSupportRepository.deleteAll();
+        postResponseRepository.deleteAll();
         postRepository.deleteAll();
         followRequestRepository.deleteAll();
         followRepository.deleteAll();

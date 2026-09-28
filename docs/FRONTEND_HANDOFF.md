@@ -420,6 +420,92 @@ Bloqueo (sección anterior), no esto.
   puntual, silenciar notificaciones, mute temporizado, mute de temas/topics, "amigos
   cercanos"/audiencias personalizadas/círculos, preferencias de recomendación.
 
+## Respuestas a un post (Backend Debt B1)
+
+Reemplaza el "apoyo" binario anterior (el corazón/like de siempre) por una respuesta
+tipada — el backend ahora persiste las 6 respuestas que el frontend ya ofrece, no solo
+"Estoy con vos". Ver `API_CONTRACT.md` §3 para el detalle completo de
+request/response/errores — acá solo la guía de UX e integración.
+
+**Enum exacto** (`PostResponseType`, mandar/leer el nombre tal cual, nunca traducido):
+
+| Categoría | Valor backend | Texto UI (ya usado en frontend) |
+|---|---|---|
+| Presencia | `WITH_YOU` | "Estoy con vos" |
+| Presencia | `NOT_ALONE` | "No estás solo/a" |
+| Presencia | `HUG` | "Te abrazo" |
+| Escucha | `READING` | "Te leo" |
+| Escucha | `TELL_ME_MORE` | "Contame más" |
+| Escucha | `LISTENING` | "Estoy escuchando" |
+
+La categoría (Presencia/Escucha) es solo para agrupar visualmente si el diseño lo pide —
+el backend nunca la manda como campo separado, se deriva 1:1 del `type` (ver tabla de
+arriba, es fija y completa).
+
+**Contrato de interacción**:
+- **Una sola pill activa por post** — `currentUserResponseType` (nuevo campo en
+  `PostResponse`, el DTO de post) indica cuál, o `null` si el usuario no respondió
+  todavía. Nunca puede haber dos pills seleccionadas a la vez para el mismo usuario/post.
+- **Click en una pill nueva → `PUT /api/posts/{postId}/response` con `{ "type": "..." }`**
+  — cambia (o crea) la respuesta persistida, siempre `200 OK`. Si ya tenías esa fila con
+  otro tipo, el backend la actualiza (no crea una segunda). Si repetís el mismo tipo que
+  ya tenías, es un no-op — no hay penalidad ni error por doble click.
+- **Click para deseleccionar/quitar tu respuesta → `DELETE /api/posts/{postId}/response`**
+  — siempre `200 OK`, incluso si nunca habías respondido (idempotente). No hay
+  confirmación ni modal necesarios del lado del backend.
+- **`presenceCount` y `listeningCount`** (nuevos campos en `PostResponse`) son los
+  conteos **reales** agregados server-side — nunca sumar/inferir client-side, y nunca
+  mostrar un conteo optimista que no vino del backend como valor final (ver optimismo
+  más abajo).
+- **No usar `localStorage` ni ningún estado local como fuente de verdad** para qué
+  respondió el usuario — eso era válido solo mientras las 5 reacciones no-"Estoy con vos"
+  eran puramente locales (antes de esta fase). Ahora las 6 persisten igual, y el backend
+  es la única fuente de verdad: `currentUserResponseType` siempre debe reflejar lo que
+  devuelve la última respuesta del servidor, no un valor recordado del dispositivo.
+- **Optimismo frontend, solo con rollback correcto**: está bien pintar la pill
+  seleccionada inmediatamente al click (antes de que vuelva la respuesta HTTP) para que
+  se sienta instantáneo, pero el estado final (pill + conteos) debe terminar reflejando
+  la respuesta real del `PUT`/`DELETE` — si la request falla, revertir al estado anterior
+  conocido, nunca dejar la UI en un estado que el backend no confirmó.
+- **El autor no puede responder a su propio post** — `PUT`/`POST` devuelve
+  `400 Bad Request` (`"You cannot respond to your own post"`) si el usuario autenticado
+  es el autor. El frontend debería directamente no mostrar las pills de respuesta en los
+  posts propios (evita el roundtrip fallido), aunque el backend igual lo rechaza si
+  llegara a intentarse.
+
+**Notificaciones**: tu **primera** respuesta a un post dispara una notificación al autor
+con `type: "NEW_POST_RESPONSE"` (antes `"NEW_SUPPORT"` — ver ⚠️ más abajo), `postId`
+del post respondido, mismo canal WebSocket existente (`/user/queue/notifications`, sin
+canal nuevo). **Cambiar de tipo o repetir el mismo NO generan una notificación
+adicional** — si el frontend muestra un toast/badge por cada notificación recibida, no
+debería sorprender que cambiar de pill varias veces solo notifique una vez al autor.
+Borrar tu respuesta nunca notifica; volver a responder después de borrarla sí genera una
+notificación nueva (es una respuesta nueva a todos los efectos). El payload de
+notificación **no** incluye el `type` de la respuesta todavía (evaluado y diferido, ver
+`BACKEND_ARCHITECTURE.md`) — si se quiere mostrar algo más contextual que "tenés una
+respuesta nueva", hay que pedir el detalle del post con el `postId` que sí viaja.
+
+**⚠️ Cambio de contrato — `NEW_SUPPORT` renombrado a `NEW_POST_RESPONSE`**: cualquier
+lugar del frontend que compare `notification.type === "NEW_SUPPORT"` (texto del toast,
+ícono, filtro) debe actualizarse a `"NEW_POST_RESPONSE"`. Es un rename, no una adición —
+el string viejo deja de aparecer.
+
+**Compatibilidad legacy (`/support`)**: `POST/DELETE /api/posts/{postId}/support` siguen
+funcionando (equivalen a "Estoy con vos" / "quitar mi respuesta"), pero están
+**deprecados** — preferir `PUT`/`DELETE /response` en cualquier integración nueva o
+refactor. Diferencia de comportamiento a tener presente si el frontend ya los usa: el
+legacy `POST /support` sigue devolviendo `409 Conflict` si ya había cualquier respuesta
+propia (nunca la pisa silenciosamente, a diferencia de `PUT /response`), y el legacy
+`DELETE /support` sigue devolviendo `404` si no había ninguna (a diferencia del `DELETE
+/response` nuevo, que es idempotente). **Y, cambio de comportamiento nuevo en ambos**:
+ahora también rechazan con `400` que el autor se responda a sí mismo — antes de esta
+fase eso estaba permitido.
+
+**Fuera de alcance de esta fase** (no implementar todavía en el frontend): historial de
+respuestas (solo se guarda la activa), múltiples respuestas simultáneas por usuario,
+reaction emojis/respuesta personalizada, ranking, gamificación, silenciar notificaciones
+de respuestas específicamente.
+
 ## Endpoints disponibles
 
 Ver `API_CONTRACT.md` para el detalle completo (request/response/reglas/errores).
@@ -429,7 +515,7 @@ Resumen de superficie por dominio:
 |---|---|---|
 | Auth | `/api/auth` | público (register/login/verify-email/resend-verification/forgot-password/reset-password/refresh/logout), salvo `change-password` que requiere JWT |
 | Users | `/api/users` | perfil propio/ajeno, discover, avatar, privacidad de perfil |
-| Posts | `/api/posts` | CRUD + feed + apoyo ("like") + privacidad de post |
+| Posts | `/api/posts` | CRUD + feed + respuestas tipadas (`/response`, `/support` legacy) + privacidad de post |
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |
 | Follows | `/api/follows` | seguir/dejar de seguir (inmediato o solicitud según privacidad), listas, eliminar seguidor |
 | Follow Requests | `/api/follow-requests` | aceptar/rechazar/cancelar solicitudes, incoming/outgoing |
@@ -508,10 +594,14 @@ Ver `WEBSOCKET_CONTRACT.md` para el contrato completo. Puntos clave para la inte
 - `403` en acciones de moderador/admin (`/api/reports/**`, `/api/admin/**`) → ocultar
   o deshabilitar esa UI para roles `USER` directamente en el cliente, además de manejar
   el 403 si igual se llega a intentar.
-- `409` en `POST /api/posts/{id}/support` (ya apoyado), `POST /api/follows/{id}` (ya
-  seguías), `POST /api/reports/{id}/resolve` (ya resuelto) → tratar como estado ya
-  alcanzado, no como error duro (refrescar el estado local en vez de mostrar un toast de
-  error genérico).
+- `409` en `POST /api/posts/{id}/support` **legacy** (ya habías respondido — no aplica a
+  `PUT /api/posts/{id}/response`, que es idempotente y nunca da `409`), `POST
+  /api/follows/{id}` (ya seguías), `POST /api/reports/{id}/resolve` (ya resuelto) →
+  tratar como estado ya alcanzado, no como error duro (refrescar el estado local en vez
+  de mostrar un toast de error genérico).
+- `400` en `PUT/POST /api/posts/{id}/response` y `.../support` si sos el autor del post
+  (Backend Debt B1) → no debería llegar a pasar si el frontend ya oculta las pills de
+  respuesta en posts propios, pero si se intenta, tratar como error de validación normal.
 - `GET /api/availability/mine` puede devolver body `null` con status `200` — **no
   asumir que siempre hay objeto**, chequear explícitamente antes de leer sus campos.
 
@@ -560,10 +650,13 @@ Cursor, no hallazgos confirmados de ausencia:
   frontend solo contempla usuarios ya seguidos/seguidores, esta vía alternativa de
   first-contact quedaría sin UI.
 - **Reacciones a estados de ánimo** (`POST/DELETE /api/statuses/{id}/react`, 4 tipos:
-  `WITH_YOU`, `WANT_TO_TALK`, `HERE_READING`, `NOT_ALONE`) — es una interacción social
-  distinta de "apoyo" a un post (`support`), con su propio contador y su propio tipo de
-  notificación (`NEW_STATUS_REACTION`). Fácil de confundir/fusionar con el sistema de
-  `support` de posts si no se los trata como features separadas.
+  `WITH_YOU`, `WANT_TO_TALK`, `HERE_READING`, `NOT_ALONE` — enum `StatusReactionType`) —
+  es una interacción social **distinta** de las respuestas a un post (`PostResponseType`,
+  ver § "Respuestas a un post" arriba), con su propio contador y su propio tipo de
+  notificación (`NEW_STATUS_REACTION`). Ambos enums comparten un par de etiquetas
+  (`WITH_YOU`/`NOT_ALONE`) por coincidencia de vocabulario — nunca son el mismo valor ni
+  se convierten entre sí. Fácil de confundir/fusionar si no se los trata como features
+  separadas.
 - **Cola de moderación priorizada** (`GET /api/reports/queue`): los reportes
   `SELF_HARM_RISK` siempre se devuelven primero server-side, independientemente de la
   fecha. Si el frontend re-ordena o pagina client-side sin respetar el orden que ya
