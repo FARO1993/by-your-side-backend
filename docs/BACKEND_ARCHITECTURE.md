@@ -737,6 +737,82 @@ eran estado local sin backend.
   (evaluado y descartado -- dominios distintos a propósito), campo `responseType`
   estructurado en `Notification` (ver arriba).
 
+## Status directo + edición de perfil (Backend Debt B2)
+
+- **`GET /api/users/{userId}/status` -- query que ya existía sin usar**: la auditoría de
+  esta fase encontró que `StatusRepository.findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc`
+  ya existía en el repositorio (mismo patrón que
+  `AvailabilityRepository.findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc`, usado por
+  `AvailabilityService.getMine`), pero **nunca estaba conectada a ningún endpoint** -- el
+  dominio `status` solo la tenía declarada. `StatusService.getCurrentStatus` (método
+  nuevo) es la primera vez que se usa: consulta directo por `userId`, nunca recorre
+  `getFeed()`/`findActiveStatusesForUsers` para filtrar en memoria. Misma definición de
+  "actual" en los dos lugares (`expiresAt > now`, más reciente por `createdAt`) -- ninguna
+  segunda definición.
+- **Acceso -- reutiliza `ProfileAccessPolicy.canViewFullProfile` tal cual, sin policy
+  nueva**: el gate es exactamente el mismo que decide si `bio` viaja completo en
+  `GET /api/users/{userId}` (dueño, perfil `PUBLIC`, o `PRIVATE` + follower ya ACEPTADO
+  -- nunca `REQUESTED`/`NONE`). Esto cubre bloqueo automáticamente (Fase 9.4, vía
+  `BlockPolicy` dentro de `canViewFullProfile`) sin ningún chequeo adicional. Mute (Fase
+  9.5) no se chequea a propósito -- mismo criterio que el resto de los accesos directos
+  (post detail, comments, support): mute nunca es control de acceso, solo filtra
+  superficies agregadas (acá, `GET /api/statuses/feed`, que sigue aplicando el `NOT
+  EXISTS` de `UserMute` sin cambios). "No accesible" → `404` genérico (mismo mensaje que
+  usuario inexistente, mismo criterio 404-no-403 que el resto de la API); "accesible pero
+  sin status activo" → `200` con body vacío (mismo criterio que
+  `GET /api/availability/mine` -- una ausencia genuina de dato no es un error de acceso).
+- **Por qué el endpoint vive en `UserController`, no en `StatusController`**: el path
+  (`/api/users/{userId}/status`) está bajo el prefijo de Users, y Spring no soporta
+  declarar una ruta absoluta que "escape" del prefijo de clase de un controller ya
+  mapeado a otro path base. Mismo patrón ya establecido por
+  `GET /api/users/{userId}/posts` (vive en `UserController`, delega en `PostService`) y
+  por los endpoints de block/mute (delegan en `BlockService`/`MuteService`) -- la lógica
+  de negocio se queda en el dominio (`StatusService`), el controller solo enruta.
+- **No se incrustó `currentStatus` dentro de `PublicUserProfileResponse`**: se evaluó y
+  se descartó para esta fase -- el endpoint separado ya es N+1-safe (una consulta
+  puntual por `userId`, no hay página de perfiles a batchear en ningún flujo actual) y
+  evita acoplar dos dominios (`user`/`status`) en un solo DTO por una mejora de UX que no
+  es estrictamente necesaria ahora. Documentado para que el frontend sepa que debe pedir
+  el status con una llamada aparte, no esperarlo embebido en el perfil.
+- **`PATCH /api/users/me` -- el mecanismo de persistencia ya existía**: la auditoría
+  confirmó que `UserService.updateProfile` ya persistía `displayName`/`bio`/`avatarUrl`/
+  `profileVisibility` de verdad (no un placeholder), con semántica "`null` = no tocar"
+  para los 4 campos, devolviendo el `UserResponse` actualizado -- nada de esto era nuevo
+  en esta fase. Lo que faltaba era **normalización de texto**, agregada directo en
+  `UserService.updateProfile` (no en el DTO vía Bean Validation, ver razón abajo):
+  - `displayName`: `trim()` + rechazo (`400`) si el resultado queda vacío. `displayName`
+    puede ser `null` en cualquier otro punto del sistema (nunca fue obligatorio en
+    `POST /api/auth/register`, ver `AuthService`/`RegisterRequest`) -- el rechazo es
+    solo para el caso específico de un PATCH que lo deja en blanco explícitamente
+    (`""`/solo espacios), que es casi siempre un error de cliente, no una intención real.
+  - `bio`: `trim()` + blank → `null` (limpiar bio es una operación válida e
+    intencional). No se agregó una librería de sanitización HTML -- `displayName`/`bio`
+    se tratan y persisten como texto plano en todo el sistema; el único punto que
+    interpola `displayName` en markup (`ResendEmailService`, el saludo de los emails
+    transaccionales) ya tenía su propio `escape()` dedicado e independiente de este
+    cambio, así que no hay riesgo real que justifique agregar dependencias nuevas.
+  - **Por qué en el service y no en el DTO**: `@NotBlank` en `UpdateProfileRequest`
+    rechazaría también el `null` legítimo ("no tocar este campo"), rompiendo la
+    semántica PATCH ya establecida -- Bean Validation no tiene una forma limpia de decir
+    "si no es null, no puede ser blank". El chequeo manual en el service (mismo patrón
+    que el self-check de `BlockService.blockUser`/`MuteService.muteUser`) es la opción
+    más simple que no sobrecomplica.
+- **Consistencia Profile/Discover/Follow -- auditada, ya era correcta**: `followState`
+  (`NONE`/`REQUESTED`/`FOLLOWING`), `followersCount`/`followingCount` (cuentan filas
+  `Follow` reales, nunca `FollowRequest` -- un `PENDING` nunca infla ningún contador, ya
+  que solo una request `ACCEPTED` produce una fila `Follow`), y el tratamiento de
+  bloqueo/mute en `GET /api/users/{userId}` ya estaban implementados correctamente desde
+  Fase 9.3/9.4/9.5 y ya tenían tests -- esta fase solo agregó la cobertura explícita que
+  faltaba (`ProfilePrivacyIntegrationTest`: accepted-follower ve perfil `PRIVATE`
+  completo, `PENDING` no infla contadores) en vez de reimplementar nada. `GET
+  /api/users/discover` usa el mismo enum `FollowState` con la misma semántica -- ninguna
+  inconsistencia encontrada entre las tres rutas (`GET /me`, `GET /{userId}`, `GET
+  /discover`).
+- **Sin migración nueva**: `displayName`/`bio` ya existían en `users` desde `V1`
+  (`VARCHAR(255)`/`TEXT`, ambos ya nullable) con margen de sobra para los límites de
+  aplicación sin cambiar (`@Size(max = 100)`/`@Size(max = 500)`, ninguno de los dos se
+  modificó) -- no hizo falta `V13`.
+
 ## Persistencia
 
 - **PostgreSQL** vía Spring Data JPA / Hibernate. `ddl-auto: validate` — el esquema

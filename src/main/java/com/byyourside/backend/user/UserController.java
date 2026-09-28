@@ -7,6 +7,8 @@ import com.byyourside.backend.mute.dto.MutedUserResponse;
 import com.byyourside.backend.post.PostService;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.status.StatusService;
+import com.byyourside.backend.status.dto.StatusResponse;
 import com.byyourside.backend.user.dto.DiscoverUserResponse;
 import com.byyourside.backend.user.dto.PublicUserProfileResponse;
 import com.byyourside.backend.user.dto.UpdateProfileRequest;
@@ -33,6 +35,7 @@ public class UserController {
     private final PostService postService;
     private final BlockService blockService;
     private final MuteService muteService;
+    private final StatusService statusService;
 
     @GetMapping("/me")
     public ResponseEntity<UserResponse> getCurrentUser(@AuthenticationPrincipal UserPrincipal principal) {
@@ -58,6 +61,19 @@ public class UserController {
                                                            @RequestParam(defaultValue = "20") int size) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(postService.getUserPosts(principal, userId, pageable));
+    }
+
+    // Backend Debt B2: contrato directo para el status/mood actual de
+    // userId -- nunca infiere desde /api/statuses/feed. 200 con body null
+    // si es accesible pero no tiene status activo (mismo criterio que
+    // GET /api/availability/mine); 404 genérico si userId no existe o si
+    // el viewer no puede ver su perfil completo (privado sin follower
+    // aceptado, o bloqueo en cualquier dirección) -- nunca revela cuál de
+    // los dos motivos aplicó.
+    @GetMapping("/{userId}/status")
+    public ResponseEntity<StatusResponse> getCurrentStatus(@AuthenticationPrincipal UserPrincipal principal,
+                                                            @PathVariable UUID userId) {
+        return ResponseEntity.ok(statusService.getCurrentStatus(principal, userId));
     }
 
     @GetMapping("/discover")

@@ -327,6 +327,40 @@ class ProfilePrivacyIntegrationTest {
                 .andExpect(status().isNoContent());
     }
 
+    // --- Backend Debt B2: consistencia Profile/Follow que no tenia cobertura dedicada ---
+
+    @Test
+    void shouldShowFullProfile_toAcceptedFollower_ofPrivateProfile() throws Exception { // item 28-Q
+        User other = registerUser("soumia", "soumia@example.com", ProfileVisibility.PRIVATE);
+        followRepository.save(Follow.builder().follower(mainUser).following(other).build());
+
+        mockMvc.perform(get("/api/users/{userId}", other.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bio").value("bio de soumia"))
+                .andExpect(jsonPath("$.followState").value("FOLLOWING"));
+    }
+
+    @Test
+    void pendingFollowRequest_doesNotInflateFollowerOrFollowingCounts() throws Exception { // item 20/28-W
+        User other = registerUser("soumia", "soumia@example.com", ProfileVisibility.PRIVATE);
+
+        mockMvc.perform(post("/api/follows/{userId}", other.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.followState").value("REQUESTED"));
+
+        mockMvc.perform(get("/api/users/{userId}", other.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.followersCount").value(0))
+                .andExpect(jsonPath("$.followState").value("REQUESTED"));
+
+        mockMvc.perform(get("/api/users/{userId}", mainUser.getId())
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(jsonPath("$.followingCount").value(0));
+    }
+
     // --- Discover: bypass lateral tapado ---
 
     @Test
