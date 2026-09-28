@@ -6,6 +6,7 @@ import com.byyourside.backend.notification.NotificationService;
 import com.byyourside.backend.notification.NotificationType;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.status.dto.StatusResponse;
+import com.byyourside.backend.user.ProfileAccessPolicy;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.dto.UserSummary;
@@ -33,6 +34,7 @@ public class StatusService {
     private final FollowRepository followRepository;
     private final NotificationService notificationService;
     private final BlockPolicy blockPolicy;
+    private final ProfileAccessPolicy profileAccessPolicy;
 
     @Transactional
     public StatusResponse setStatus(UserPrincipal principal, StatusMood mood) {
@@ -46,6 +48,51 @@ public class StatusService {
                 .build());
 
         return toResponse(status, 0, null);
+    }
+
+    // Backend Debt B2: contrato directo para "el status actual de este
+    // usuario" -- no infiere desde /statuses/feed (nunca recorre ni carga
+    // el feed completo para filtrar en memoria). Reusa exactamente la misma
+    // definicion de "actual" que ya existia sin usar en el repositorio
+    // (findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc, ORDER BY
+    // createdAt DESC + expiresAt > now, misma semantica que feed/getFeed y
+    // que AvailabilityService.getMine para "disponibilidad propia
+    // actual") -- ninguna segunda definicion de "actual".
+    //
+    // Acceso: reusa ProfileAccessPolicy.canViewFullProfile tal cual (mismo
+    // gate que perfil completo/posts) -- NO una policy nueva. Esto cubre
+    // bloqueo (Fase 9.4, via BlockPolicy dentro de canViewFullProfile) y
+    // perfil PRIVATE sin follower aceptado, con el mismo 404 generico que
+    // post/comment/support/reaccion de estado (nunca revela existencia de
+    // bloqueo ni de perfil privado). Mute (Fase 9.5) NO se chequea a
+    // proposito -- mute nunca es control de acceso: si A muteo a B pero
+    // puede acceder directamente al perfil de B, A puede seguir consultando
+    // su status con normalidad (el feed agregado si sigue filtrando mute,
+    // ver findActiveStatusesForUsers).
+    public StatusResponse getCurrentStatus(UserPrincipal principal, UUID userId) {
+        User target = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+
+        if (!profileAccessPolicy.canViewFullProfile(principal.getId(), target)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+        }
+
+        // Sin status activo: 200 con body null, mismo criterio que
+        // AvailabilityService.getMine -- una ausencia genuina de dato no es
+        // un 404 (eso ya se resolvio arriba, para el caso de acceso).
+        Status status = statusRepository
+                .findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc(userId, Instant.now())
+                .orElse(null);
+        if (status == null) {
+            return null;
+        }
+
+        long count = statusReactionRepository.countByStatusId(status.getId());
+        String myReaction = statusReactionRepository.findByStatusIdAndActorId(status.getId(), principal.getId())
+                .map(r -> r.getType().name())
+                .orElse(null);
+
+        return toResponse(status, count, myReaction);
     }
 
     public List<StatusResponse> getFeed(UserPrincipal principal) {

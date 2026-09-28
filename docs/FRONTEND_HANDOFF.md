@@ -506,6 +506,75 @@ respuestas (solo se guarda la activa), múltiples respuestas simultáneas por us
 reaction emojis/respuesta personalizada, ranking, gamificación, silenciar notificaciones
 de respuestas específicamente.
 
+## Status directo + edición de perfil (Backend Debt B2)
+
+### Edición de perfil — `PATCH /api/users/me`
+Este endpoint **ya existía y ya persistía de verdad** `displayName`/`bio`/`avatarUrl`/
+`profileVisibility` antes de esta fase — lo nuevo acá es la validación de texto. Si el
+frontend ya lo integraba, revisar los dos puntos siguientes por cambios de contrato:
+
+- **`displayName`**: se recorta server-side (`trim`) — si el frontend manda
+  `"  Facundo  "`, el perfil guarda y devuelve `"Facundo"`. Si se manda un valor
+  **no-null** que queda vacío tras el trim (`""` o solo espacios), el backend responde
+  `400 Bad Request` con `message: "displayName cannot be blank"` — **no** lo interpreta
+  como "vaciar el campo". Para no tocar `displayName`, omitir el campo del body (no
+  mandar `""`). Límite `100` caracteres, sin cambios.
+- **`bio`**: también se recorta server-side. A diferencia de `displayName`, mandar `bio`
+  con solo espacios (o `""`) **sí** es una operación válida — el backend la normaliza y
+  persiste como `null` (limpia la bio). El GET subsiguiente refleja `bio: null` (el campo
+  directamente no aparece en el JSON, mismo criterio que "sin bio" en cualquier otro
+  punto de la API), no una cadena vacía. Límite `500` caracteres, sin cambios.
+- **Response**: `200` + `UserResponse` con los valores **ya recortados** — no asumir que
+  el string devuelto es idéntico byte-a-byte al enviado si tenía espacios al borde.
+- **No hay sanitización de HTML/markup** — `displayName`/`bio` son texto plano de punta a
+  punta. La UI debe escapar al renderizar (React/similares ya lo hacen por default al
+  interpolar texto; el riesgo real está solo si en algún punto se usa
+  `dangerouslySetInnerHTML` u equivalente con estos campos, lo cual no debería hacerse).
+- **Campos que NO se pueden modificar vía este endpoint**: `username`, `email`, `role`,
+  `emailVerified`/`emailVerifiedAt`, `createdAt`, `id`. `avatarUrl` técnicamente acepta
+  cualquier string acá, pero la vía real para subir un archivo sigue siendo
+  `POST /api/users/me/avatar` (`multipart/form-data`) — sin cambios.
+- **No usar `localStorage`** como fuente de verdad para el perfil editado — el mismo
+  criterio que ya aplica al resto de la API: `GET /api/users/me` después del `PATCH` es
+  la fuente real.
+
+### Status directo por usuario — `GET /api/users/{userId}/status`
+Nuevo endpoint: el status/mood **actual** de un usuario puntual, sin pasar por
+`GET /api/statuses/feed`. Pensado para mostrarlo, por ejemplo, en la propia tarjeta de
+perfil de esa persona.
+
+- **"Sin status"**: `200 OK` con **body vacío** (no `404`, no un objeto con campos en
+  `null`) — mismo patrón ya usado en `GET /api/availability/mine`. El frontend debe
+  chequear que la respuesta tenga contenido antes de leer campos (`response.data` vacío/
+  `null` según el cliente HTTP), no asumir que siempre viene un objeto `StatusResponse`.
+- **DTO**: reusa `StatusResponse` tal cual (misma forma que en `GET /api/statuses/feed`)
+  — `id`, `user` (`UserSummary`), `mood`, `createdAt`, `expiresAt`, `reactionCount`,
+  `reactedByCurrentUser`. Ningún campo nuevo, ningún DTO paralelo.
+- **`404 Not Found`**: `userId` no existe, o no es accesible para el usuario autenticado
+  — mismas reglas que ver la `bio` completa en `GET /api/users/{userId}` (perfil
+  `PRIVATE` sin ser follower aceptado, o bloqueo en cualquier dirección). El frontend no
+  puede (ni debe intentar) distinguir "no existe" de "no tengo acceso" en este `404` —
+  mismo criterio que el resto de la API.
+- **Mute no lo afecta**: si silenciaste a `userId`, igual podés consultar su status
+  directo desde su perfil con normalidad — silenciar solo saca su contenido del feed
+  agregado, nunca del acceso puntual a su perfil.
+- **No confundir con el feed**: `GET /api/statuses/feed` sigue siendo la superficie para
+  el timeline (propios + de quienes seguís, filtrado por mute); este endpoint nuevo es
+  para "quiero el status de esta persona en particular" — no reemplaza al feed ni debería
+  usarse para armarlo (una llamada por usuario sería N+1 en un timeline).
+- **No se agregó `currentStatus` embebido en `PublicUserProfileResponse`** — decisión
+  explícita de esta fase, no un olvido (ver `BACKEND_ARCHITECTURE.md`). Si se quiere
+  mostrar el status junto con el perfil, es una llamada aparte a este endpoint.
+
+### Follow state en Profile — recordatorio
+`followState` en `GET /api/users/{userId}` (y `GET /me`, siempre `"NONE"` ahí) es la
+fuente de verdad de la relación — `"NONE"` (sin relación ni solicitud), `"REQUESTED"`
+(solicitud pendiente, solo aplica a perfiles `PRIVATE`), `"FOLLOWING"` (relación activa,
+sea perfil `PUBLIC` o `PRIVATE`). Nunca tratar `"REQUESTED"` como `"NONE"` en la UI — son
+estados distintos con acciones distintas (cancelar solicitud vs. seguir). Ya estaba
+implementado y probado desde Fase 9.3; esta fase solo confirmó (auditoría + tests) que
+`GET /me`, `GET /{userId}` y `GET /discover` son consistentes entre sí.
+
 ## Endpoints disponibles
 
 Ver `API_CONTRACT.md` para el detalle completo (request/response/reglas/errores).
@@ -514,7 +583,7 @@ Resumen de superficie por dominio:
 | Dominio | Base path | Notas rápidas |
 |---|---|---|
 | Auth | `/api/auth` | público (register/login/verify-email/resend-verification/forgot-password/reset-password/refresh/logout), salvo `change-password` que requiere JWT |
-| Users | `/api/users` | perfil propio/ajeno, discover, avatar, privacidad de perfil |
+| Users | `/api/users` | perfil propio/ajeno, discover, avatar, privacidad de perfil, status directo (`/{userId}/status`) |
 | Posts | `/api/posts` | CRUD + feed + respuestas tipadas (`/response`, `/support` legacy) + privacidad de post |
 | Comments | `/api/posts/{postId}/comments` | anidado bajo post |
 | Follows | `/api/follows` | seguir/dejar de seguir (inmediato o solicitud según privacidad), listas, eliminar seguidor |
@@ -554,8 +623,12 @@ Resumen de superficie por dominio:
   existe" **o** "ese usuario te bloqueó a vos" (Fase 9.4, ver § Bloqueo de usuarios) —
   ambos casos indistinguibles a propósito.
 - **PATCH parciales**: en `PATCH /api/users/me`, `PATCH /api/posts/{id}` los campos
-  omitidos (`null`) se interpretan como "no tocar", no como "vaciar". No hay forma de
-  vaciar `bio`/`displayName` enviando `null` explícito.
+  omitidos (`null`) se interpretan como "no tocar", no como "vaciar". Ningún campo se
+  vacía enviando `null` explícito. **`bio` es la excepción vía blank, no vía `null`**
+  (Backend Debt B2): mandar `bio: "   "` (no-null, solo espacios) sí la limpia — el
+  backend la normaliza a `null` internamente. `displayName` **no** tiene una vía de
+  vaciado — un valor no-null que quede en blanco tras `trim()` es `400 Bad Request`, no
+  una operación de "vaciar". Ver § "Status directo + edición de perfil" arriba.
 
 ## Enums (usar como union types / string literal types en TS, no como número)
 
@@ -604,6 +677,12 @@ Ver `WEBSOCKET_CONTRACT.md` para el contrato completo. Puntos clave para la inte
   respuesta en posts propios, pero si se intenta, tratar como error de validación normal.
 - `GET /api/availability/mine` puede devolver body `null` con status `200` — **no
   asumir que siempre hay objeto**, chequear explícitamente antes de leer sus campos.
+  **`GET /api/users/{userId}/status` (Backend Debt B2) tiene el mismo comportamiento**
+  cuando el usuario no tiene status activo.
+- `400` en `PATCH /api/users/me` con `displayName` en blanco (solo espacios o `""`)
+  (Backend Debt B2) → `message: "displayName cannot be blank"` — mostrar como error de
+  formulario, no como error genérico; a diferencia de `bio`, este campo no se puede
+  vaciar por esta vía (ver § "Status directo + edición de perfil" arriba).
 
 ## Limitaciones actuales conocidas (del backend, verificadas en código)
 

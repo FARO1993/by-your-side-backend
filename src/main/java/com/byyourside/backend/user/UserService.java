@@ -44,14 +44,35 @@ public class UserService {
         return toResponse(user);
     }
 
+    // Backend Debt B2: null = no tocar (sin cambios, ya era el criterio de
+    // esta fase para los 4 campos). Lo nuevo es la normalizacion de texto:
+    // - displayName: trim + rechazo si queda vacio (400) -- displayName
+    //   puede ser null a nivel de todo el sistema (nunca se exigio en
+    //   registro, ver RegisterRequest/AuthService), pero un PATCH explicito
+    //   que lo deja en blanco (solo espacios) es casi seguro un error del
+    //   cliente, no una intencion real de "vaciar" -- si se quiere no tener
+    //   displayName, la via es no mandar el campo (omitirlo), no mandar "".
+    // - bio: trim + blank -> null (limpiar bio explicitamente SI es una
+    //   operacion valida e intencional -- "" y null significan lo mismo
+    //   conceptualmente para bio en todo el resto del codigo, ver
+    //   PublicUserProfileResponse: `fullProfile ? target.getBio() : null`).
+    // Texto plano en ambos casos -- sin sanitizacion HTML: la UI escapa al
+    // renderizar (unico lugar que ya necesitaba escape, el saludo de los
+    // emails transaccionales, tiene su propio escape() dedicado, ver
+    // ResendEmailService).
     public UserResponse updateProfile(UserPrincipal principal, UpdateProfileRequest request) {
         User user = findByIdOrThrow(principal.getId());
 
         if (request.displayName() != null) {
-            user.setDisplayName(request.displayName());
+            String trimmed = request.displayName().trim();
+            if (trimmed.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "displayName cannot be blank");
+            }
+            user.setDisplayName(trimmed);
         }
         if (request.bio() != null) {
-            user.setBio(request.bio());
+            String trimmed = request.bio().trim();
+            user.setBio(trimmed.isEmpty() ? null : trimmed);
         }
         if (request.avatarUrl() != null) {
             user.setAvatarUrl(request.avatarUrl());

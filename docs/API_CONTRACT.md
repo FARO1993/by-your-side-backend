@@ -507,18 +507,43 @@ Perfil completo del usuario autenticado, incluye email.
   quién pregunta (es siempre el propio usuario).
 
 ### `PATCH /api/users/me`
-Actualiza el perfil propio. Todos los campos son opcionales (solo se aplican los
-`!= null`; no hay forma de "vaciar" `bio`/`displayName`/`avatarUrl` enviando `null`
-explícito, porque `null` se interpreta como "no tocar").
+Actualiza el perfil propio — **persistencia real** (ya lo era antes de Backend Debt B2;
+esta fase agregó validación/normalización de texto, no el mecanismo de persistir en sí).
+Todos los campos son opcionales (solo se aplican los `!= null`; `null`/campo omitido
+siempre significa "no tocar", para los 4 campos).
 - **Body** (`UpdateProfileRequest`):
   ```json
   { "displayName": "máx 100 chars", "bio": "máx 500 chars", "avatarUrl": "string", "profileVisibility": "PUBLIC | PRIVATE" }
   ```
+  - `displayName` (Backend Debt B2 — validación nueva): opcional (`null`/omitido = no
+    tocar). Si se envía un valor no-null, se recorta (`trim`) y **debe quedar no-vacío**
+    tras el trim — `400 Bad Request` (`"displayName cannot be blank"`) si el resultado es
+    `""` o solo espacios. **No** existe una vía para vaciar `displayName` explícitamente
+    vía este endpoint (a diferencia de `bio`) — es un campo que, aunque puede ser `null`
+    a nivel de todo el sistema (nunca fue obligatorio en el registro, ver
+    `POST /api/auth/register`), un PATCH que lo deja en blanco es casi siempre un error
+    del cliente, no una intención real de "vaciarlo". Límite máximo sin cambios
+    (`@Size(max = 100)`, ya existía).
+  - `bio` (Backend Debt B2 — validación nueva): opcional (`null`/omitido = no tocar). Si
+    se envía un valor no-null, se recorta (`trim`); si el resultado queda vacío (`""` o
+    solo espacios), **se persiste como `null`** (limpiar la bio explícitamente sí es una
+    operación válida e intencional, a diferencia de `displayName`) — mismo criterio que
+    ya usaba el resto de la API para "sin bio" (`null`, nunca `""`, ver perfil
+    limitado/privado más abajo). Límite máximo sin cambios (`@Size(max = 500)`, ya
+    existía).
+  - `avatarUrl`: sin cambios de validación en esta fase.
   - `profileVisibility` (Fase 9.1): opcional, mismo criterio "`null` = no tocar" que el
     resto de los campos de este DTO. Un valor que no sea `PUBLIC`/`PRIVATE` responde
     `400 Bad Request` (body malformado — mismo manejo genérico que cualquier enum
     inválido en esta API, no un caso especial).
-- **Response 200**: `UserResponse` (igual forma que `GET /me`).
+  - **Texto plano, sin sanitización HTML** (Backend Debt B2, decisión explícita):
+    `displayName`/`bio` se validan (trim + límites) y persisten tal cual — nunca se
+    interpretan como markup en el backend. El único lugar de todo el sistema que
+    interpola `displayName` en HTML (el saludo de los emails transaccionales) ya tiene su
+    propio escape dedicado, independiente de esto. La UI es responsable de escapar al
+    renderizar, como con cualquier texto de usuario en esta API.
+- **Response 200**: `UserResponse` (igual forma que `GET /me`) — refleja los valores
+  **ya recortados/normalizados** que quedaron persistidos, no el string crudo enviado.
 - **Nota**: `avatarUrl` puede setearse aquí como URL arbitraria; el endpoint dedicado
   de upload (abajo) es la vía recomendada para subir un archivo real vía Cloudinary.
 - **Identidad**: como todo `/me`, opera exclusivamente sobre el usuario del JWT — no hay
@@ -623,6 +648,49 @@ Posts de un usuario, respetando visibilidad según la relación con quien pregun
 - **Response 200**: `Page<PostResponse>` (ver forma de `PostResponse` en § Posts).
 - **Errores**: `404 Not Found` si `userId` no existe (esto sí es 404 real — el usuario en
   sí no existe, no es un tema de privacidad).
+
+### `GET /api/users/{userId}/status` (Backend Debt B2)
+Contrato directo para el status/mood **actual** de `userId` — a diferencia de
+`GET /api/posts/feed`/`GET /api/statuses/feed`, esta ruta consulta puntualmente por
+`userId`, nunca infiere recorriendo el feed. "Actual" tiene exactamente la misma
+definición que ya usaba `GET /api/statuses/feed`: el status **no vencido**
+(`expiresAt > now`) más reciente (`createdAt DESC`) de ese usuario — sin una segunda
+definición de "actual" para esta ruta.
+- **Path params**: `userId` (UUID).
+- **Response 200** (`StatusResponse`, misma forma que en § Statuses, o **body vacío** si
+  el usuario no tiene un status activo ahora mismo — mismo criterio que
+  `GET /api/availability/mine`: una ausencia genuina de dato es `200`, nunca `404`; el
+  frontend debe manejar `response.data` vacío/`null`, no asumir que siempre hay objeto):
+  ```json
+  {
+    "id": "uuid",
+    "user": { "id": "uuid", "username": "...", "displayName": "...", "avatarUrl": "..." },
+    "mood": "WELL",
+    "createdAt": "...",
+    "expiresAt": "...",
+    "reactionCount": 2,
+    "reactedByCurrentUser": "WITH_YOU o null"
+  }
+  ```
+- **Acceso — reusa exactamente el mismo gate que perfil completo** (`ProfileAccessPolicy.
+  canViewFullProfile`, la misma policy que decide `bio` en `GET /api/users/{userId}` y
+  acceso a posts): dueño → siempre visible. Perfil `PUBLIC` → siempre visible. Perfil
+  `PRIVATE` + follower ya **ACEPTADO** → visible. Perfil `PRIVATE` + `REQUESTED`/`NONE` →
+  no visible. Bloqueo (Fase 9.4, en cualquier dirección) → no visible. En todos los casos
+  de "no visible", `404 Not Found` genérico (mismo mensaje que un usuario inexistente —
+  nunca revela si el motivo fue bloqueo o privacidad, mismo criterio 404-no-403 que
+  posts/comments/support/reacciones de estado).
+  **Mute (Fase 9.5) — a propósito SIN efecto acá**: silenciar a `userId` no impide
+  consultar su status directamente — es acceso directo, no una superficie agregada (mute
+  solo saca contenido de `GET /api/statuses/feed`, nunca de un acceso puntual por
+  `userId`).
+- **Errores**: `404 Not Found` — `userId` no existe, perfil no accesible (ver arriba), o
+  bloqueo (ver arriba); los tres casos son indistinguibles desde el status code.
+- **No confundir con `GET /api/statuses/feed`**: el feed es una superficie agregada
+  (propios + de quienes se sigue, filtrada por mute) pensada para timeline; esta ruta es
+  para "quiero saber el status de esta persona en particular", típicamente desde su
+  perfil — funcionan con reglas de acceso distintas a propósito (ver arriba) y no deben
+  fusionarse.
 
 ### `GET /api/users/discover`
 Lista de usuarios que el autenticado **no sigue todavía** (para descubrir gente nueva).
