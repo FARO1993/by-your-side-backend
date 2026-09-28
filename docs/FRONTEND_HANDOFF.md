@@ -692,7 +692,8 @@ Resumen de superficie por dominio:
 | Blocking | `/api/users/{userId}/block`, `/api/users/me/blocked` | bloquear/desbloquear, lista de bloqueados propios |
 | Muting | `/api/users/{userId}/mute`, `/api/users/me/muted` | silenciar/dejar de silenciar (unilateral), lista de silenciados propios |
 | Statuses | `/api/statuses` | "estado de ánimo" efímero (24h) + reacciones |
-| Availability | `/api/availability` | "modo compañía" efímero (6h) |
+| Availability | `/api/availability` | "modo compañía" efímero (6h) — **legacy**, ver Companion Need |
+| Companion Need | `/api/companion/need` | "necesito compañía ahora" efímero (2h) — Backend Debt B4B.1, primer PR del rediseño del dominio Companion. Nunca público, solo `/mine` |
 | Chat | `/api/conversations` | conversaciones 1:1, mensajes paginados |
 | Notifications | `/api/notifications` | in-app, generadas internamente, mark-one (`/{id}/read`) + read-all + unread-count |
 | Reports | `/api/reports` | crear (cualquiera), resolver (moderador/admin) |
@@ -778,8 +779,8 @@ Ver `WEBSOCKET_CONTRACT.md` para el contrato completo. Puntos clave para la inte
   respuesta en posts propios, pero si se intenta, tratar como error de validación normal.
 - `GET /api/availability/mine` puede devolver body `null` con status `200` — **no
   asumir que siempre hay objeto**, chequear explícitamente antes de leer sus campos.
-  **`GET /api/users/{userId}/status` (Backend Debt B2) tiene el mismo comportamiento**
-  cuando el usuario no tiene status activo.
+  **`GET /api/users/{userId}/status` (Backend Debt B2) y `GET /api/companion/need/mine`
+  (Backend Debt B4B.1) tienen el mismo comportamiento** cuando no hay dato activo.
 - `400` en `PATCH /api/users/me` con `displayName` en blanco (solo espacios o `""`)
   (Backend Debt B2) → `message: "displayName cannot be blank"` — mostrar como error de
   formulario, no como error genérico; a diferencia de `bio`, este campo no se puede
@@ -828,7 +829,12 @@ Cursor, no hallazgos confirmados de ausencia:
   (`POST /api/conversations/{userId}` permite iniciar conversación con alguien
   disponible **sin** relación de follow previa). Si el flujo de "iniciar chat" en el
   frontend solo contempla usuarios ya seguidos/seguidores, esta vía alternativa de
-  first-contact quedaría sin UI.
+  first-contact quedaría sin UI. **Nota (Backend Debt B4B.1)**: este endpoint es ahora
+  legacy — `/api/companion/need` es el primer paso del reemplazo (ver diseño B4A), pero
+  todavía no reemplaza nada funcionalmente: `Need` no tiene aún ningún `Offering` con el
+  que cruzarse (eso es B4B.2), así que hoy `/api/availability` sigue siendo la única vía
+  real para "modo compañía". `CompanionNeed` **no tiene frontend ni caso de uso propio
+  todavía** — es pura base para el flujo Need→Offering que llega en B4B.2.
 - **Reacciones a estados de ánimo** (`POST/DELETE /api/statuses/{id}/react`, 4 tipos:
   `WITH_YOU`, `WANT_TO_TALK`, `HERE_READING`, `NOT_ALONE` — enum `StatusReactionType`) —
   es una interacción social **distinta** de las respuestas a un post (`PostResponseType`,
