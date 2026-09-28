@@ -575,6 +575,107 @@ estados distintos con acciones distintas (cancelar solicitud vs. seguir). Ya est
 implementado y probado desde Fase 9.3; esta fase solo confirmó (auditoría + tests) que
 `GET /me`, `GET /{userId}` y `GET /discover` son consistentes entre sí.
 
+## Notificaciones (Backend Debt B3)
+
+### Listado — `GET /api/notifications`
+Sin cambios de contrato en el shape general — sigue siendo `Page<NotificationResponse>`
+(`page`/`size`, default `0`/`20`) con el envelope completo de Spring Data (`content`,
+`totalElements`, `totalPages`, `number`, `size`, `last`). **Orden ahora estable**:
+`createdAt DESC, id DESC` — si dos notificaciones se crean en el mismo instante, el
+orden entre ellas es determinista y no cambia entre requests.
+
+`NotificationResponse` tiene 3 campos nuevos (adición pura, nada se quita):
+```json
+{
+  "id": "uuid", "actor": { /* UserSummary */ }, "type": "NEW_STATUS_REACTION",
+  "postId": null, "statusId": "uuid", "followRequestId": null,
+  "read": false, "createdAt": "..."
+}
+```
+Cada `type` puebla **como máximo uno** de `postId`/`statusId`/`followRequestId` — nunca
+asumir que `postId` sirve para navegar un `NEW_STATUS_REACTION` (ver tabla completa en
+`API_CONTRACT.md` § 9). **Los tres pueden apuntar a un recurso ya resuelto/vencido**
+(post borrado, status expirado, follow request ya `ACCEPTED`/`REJECTED`/`CANCELLED`) —
+el backend nunca rompe por esto, pero el frontend debe manejar con gracia que el destino
+de la navegación ya no exista o ya no acepte la acción esperada (ver "Follow request"
+abajo).
+
+### Marcar una notificación como leída — `PATCH /api/notifications/{id}/read`
+Nuevo. Llamarlo cuando el usuario abre/interactúa con una notificación puntual (ej. tap
+en la lista de Novedades) — no reemplaza a `PATCH /api/notifications/read-all` (marcar
+todas), que sigue existiendo para el caso "marcar todo como leído".
+- **Response 200**: `NotificationResponse` con `read: true`.
+- **Idempotente**: llamarlo sobre una ya leída no falla, simplemente confirma `read: true`.
+- **`404`**: la notificación no existe o no es tuya — mismo tratamiento para ambos casos,
+  no intentar distinguirlos.
+- **`unread-count` después de esto**: `GET /api/notifications/unread-count` refleja el
+  nuevo valor real en la siguiente consulta (no hay que esperar ni forzar un refresh
+  especial) — es una query `COUNT` real, no un contador cacheado.
+
+### Reacción a un status — usar `statusId`, no `postId`
+Al navegar desde una notificación `NEW_STATUS_REACTION`, usar el campo `statusId` para ir
+al status correspondiente — **nunca** `postId` (viaja en `null` para este tipo, a
+propósito: los estados son un dominio separado de los posts). Si no existe un endpoint de
+detalle de status individual en el frontend todavía, `statusId` sigue siendo el
+identificador correcto para cuando se implemente esa navegación.
+
+### Follow request desde Novedades — `followRequestId`
+La notificación `FOLLOW_REQUEST_RECEIVED` incluye `followRequestId` — usarlo para
+ejecutar las acciones reales:
+- Aceptar: `POST /api/follow-requests/{followRequestId}/accept`
+- Rechazar: `POST /api/follow-requests/{followRequestId}/reject`
+
+**No crear lógica local falsa ni un endpoint alternativo** — estos son los mismos
+endpoints que ya existen para la pantalla de solicitudes entrantes (Fase 9.3), la
+notificación solo aporta el id para poder actuar directo sin navegar primero a esa
+pantalla. `FOLLOW_REQUEST_ACCEPTED` también incluye `followRequestId`, pero ahí es solo
+contexto — no hay ninguna acción pendiente sobre un trámite ya aceptado.
+
+**Trámite obsoleto (`followRequestId` "stale")**: si el usuario tarda en actuar sobre una
+notificación vieja, el trámite pudo haberse resuelto por otra vía mientras tanto (el otro
+lado lo canceló, o ya fue aceptado/rechazado desde la pantalla de solicitudes). Llamar a
+`accept`/`reject` con ese `followRequestId` en ese caso devuelve `409 Conflict` — tratarlo
+como "esta solicitud ya no está disponible" (refrescar el estado, no como error genérico),
+nunca mantener un estado local propio de si la solicitud sigue pendiente.
+
+### WebSocket — mismo canal, mismo DTO
+Sin cambios de canal (`/user/queue/notifications`) ni de mecanismo. El payload que llega
+por WebSocket es el **mismo** `NotificationResponse` que devuelve `GET /api/notifications`
+(incluye `statusId`/`followRequestId` también) — no hay dos formas distintas de la misma
+notificación según el canal.
+
+**Notificaciones nuevas durante paginación** (con paginación por offset, no cursor):
+- Al recibir una notificación nueva por WS, hacer **prepend en memoria** a la lista ya
+  cargada — no volver a pedir `page=0` automáticamente (evita perder la posición de
+  scroll del usuario).
+- **Deduplicar siempre por `id`** al combinar el prepend con lo que ya está en memoria, y
+  también al cargar páginas siguientes (`page=1`, `page=2`, ...) — los offsets pueden
+  desplazarse levemente si llegaron notificaciones nuevas entre una carga y la siguiente.
+- Un refresh/reapertura de la pantalla puede simplemente volver a pedir `page=0` desde
+  cero — **no tratar las páginas ya cargadas como un snapshot inmutable**.
+- El backend no implementa cursor pagination ni tokens de snapshot en esta fase — es una
+  decisión explícita (`Page`/`Pageable` estándar, ya usado en toda la API), no una
+  limitación a rodear con lógica compleja del lado del cliente.
+
+### Unread count + WebSocket
+No hace falta un canal separado para el contador de no leídas. Ante una notificación
+nueva por WS, el frontend puede **incrementar localmente** el badge, o simplemente
+volver a pedir `GET /api/notifications/unread-count` — cualquiera de las dos es válida,
+el backend no empuja el count por WS.
+
+### Mute y Block — recordatorio
+- **Mute no silencia notificaciones** (decisión explícita, reconfirmada en esta fase) —
+  seguís recibiendo notificaciones de alguien que silenciaste, exactamente igual que si
+  no lo hubieras silenciado. No confundir "silenciar a un usuario" con "silenciar sus
+  notificaciones" (esto último no existe todavía, ver fuera de alcance).
+- **Block ya suprime notificaciones nuevas entre las dos partes** (Fase 9.4, sin
+  cambios) — notificaciones históricas previas al bloqueo no se borran.
+
+### Fuera de alcance de esta fase (no implementar todavía en el frontend)
+Preferencias de notificación, mute de notificaciones específicamente, push notifications
+mobile, preferencias de notificación por email, borrar/archivar notificaciones
+individuales, agrupamiento de notificaciones.
+
 ## Endpoints disponibles
 
 Ver `API_CONTRACT.md` para el detalle completo (request/response/reglas/errores).
@@ -593,7 +694,7 @@ Resumen de superficie por dominio:
 | Statuses | `/api/statuses` | "estado de ánimo" efímero (24h) + reacciones |
 | Availability | `/api/availability` | "modo compañía" efímero (6h) |
 | Chat | `/api/conversations` | conversaciones 1:1, mensajes paginados |
-| Notifications | `/api/notifications` | in-app, generadas internamente |
+| Notifications | `/api/notifications` | in-app, generadas internamente, mark-one (`/{id}/read`) + read-all + unread-count |
 | Reports | `/api/reports` | crear (cualquiera), resolver (moderador/admin) |
 | Admin | `/api/admin/users` | cambiar rol, solo admin |
 

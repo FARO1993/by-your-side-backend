@@ -99,7 +99,13 @@ public class FollowService {
                     .target(target)
                     .build());
 
-            notificationService.notify(target, follower, NotificationType.FOLLOW_REQUEST_RECEIVED, null);
+            // Backend Debt B3: followRequestId real -- el request recien
+            // creado/encontrado, para que el frontend pueda aceptar/
+            // rechazar directo desde la notificacion via los endpoints
+            // existentes de FollowRequestService (nunca un endpoint
+            // paralelo).
+            notificationService.notify(target, follower, NotificationType.FOLLOW_REQUEST_RECEIVED,
+                    null, null, request.getId());
 
             return new FollowResponse(follower.getId(), target.getId(), request.getCreatedAt(), FollowState.REQUESTED.name(), request.getId());
         } catch (DataIntegrityViolationException e) {

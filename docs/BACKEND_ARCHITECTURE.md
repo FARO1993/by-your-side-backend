@@ -44,7 +44,10 @@ com.byyourside.backend
 │                   MuteService (mute/unmute/lista) — Fase 9.5. Deliberadamente NO tiene
 │                   un "MutePolicy" equivalente a BlockPolicy: mute no es control de
 │                   acceso, cada query que lo necesita filtra directo (ver más abajo)
-├── notification     Notification, NotificationType — generadas internamente, nunca por API directa
+├── notification     Notification (postId/statusId/followRequestId, ninguno con FK),
+│                   NotificationType, NotificationService (notify/markAsRead/
+│                   markAllAsRead) — generadas internamente, nunca por API directa
+│                   salvo mark-one/read-all/unread-count (Backend Debt B3)
 ├── post            Post, PostVisibility, PostStatus, PostAccessPolicy (Fase 9.1: "puede
 │                   este viewer ver este post", reutilizado por comment/postresponse)
 ├── postresponse    PostResponse, PostResponseType (WITH_YOU/NOT_ALONE/HUG/READING/
@@ -104,7 +107,11 @@ PostResponse (post_responses, Backend Debt B1 — tabla `post_supports` renombra
               evolucionada in-place, ver V12) — N:1 → Post, N:1 → User, `type`
               (`PostResponseType`), UNIQUE(post_id, user_id): una sola respuesta activa
               por usuario/post, cambiar de tipo es UPDATE de la misma fila
-Notification (notifications) — N:1 → User (recipient), N:1 → User (actor), post_id opcional (no FK)
+Notification (notifications) — N:1 → User (recipient), N:1 → User (actor). post_id/
+                        status_id/follow_request_id opcionales, sin FK ninguno (Backend
+                        Debt B3 agrega los dos ultimos en V13, mismo criterio que post_id
+                        desde V1) -- cada NotificationType puebla como maximo uno de los
+                        tres
 Status (statuses) — N:1 → User
 StatusReaction (status_reactions) — N:1 → Status, N:1 → User (actor), UNIQUE(status_id, actor_id)
 Availability (availabilities) — N:1 → User
@@ -808,10 +815,85 @@ eran estado local sin backend.
   /api/users/discover` usa el mismo enum `FollowState` con la misma semántica -- ninguna
   inconsistencia encontrada entre las tres rutas (`GET /me`, `GET /{userId}`, `GET
   /discover`).
-- **Sin migración nueva**: `displayName`/`bio` ya existían en `users` desde `V1`
-  (`VARCHAR(255)`/`TEXT`, ambos ya nullable) con margen de sobra para los límites de
-  aplicación sin cambiar (`@Size(max = 100)`/`@Size(max = 500)`, ninguno de los dos se
-  modificó) -- no hizo falta `V13`.
+- **Sin migración nueva en esta fase (B2)**: `displayName`/`bio` ya existían en `users`
+  desde `V1` (`VARCHAR(255)`/`TEXT`, ambos ya nullable) con margen de sobra para los
+  límites de aplicación sin cambiar (`@Size(max = 100)`/`@Size(max = 500)`, ninguno de
+  los dos se modificó) -- Backend Debt B2 no necesitó ninguna migración. (`V13` sí
+  existe, pero es de Backend Debt B3 -- ver más abajo.)
+
+## Notificaciones — mark-one, referencias navegables, orden estable (Backend Debt B3)
+
+- **Auditoría**: `GET /api/notifications` ya paginaba de verdad (`Page`/`Pageable`, sin
+  cargar todo en memoria), `PATCH /api/notifications/read-all` ya era un `UPDATE` bulk
+  (`@Modifying` + JPQL, no iteraba filas), y `GET .../unread-count` ya era un `COUNT`
+  real (nunca un contador denormalizado) -- ninguno de los tres necesitó cambios de
+  fondo. Lo que faltaba: marcar una notificación puntual, una referencia navegable real
+  para `NEW_STATUS_REACTION`/`FOLLOW_REQUEST_RECEIVED` (antes viajaban con `postId: null`
+  sin ningún otro dato útil para navegar), y un desempate estable en el orden de la
+  lista.
+- **`PATCH /api/notifications/{id}/read` — ownership resuelto en una sola query**:
+  `NotificationRepository.findByIdAndRecipientId(id, recipientId)` filtra por owner
+  DENTRO del `WHERE` (mismo criterio que pedía la fase: nunca `findById()` + chequeo
+  aparte en el service) -- no existe una fila intermedia donde un caller pueda "olvidarse"
+  de validar ownership. Not-found y not-owned son indistinguibles a propósito (una sola
+  query, un solo resultado posible: `404` genérico) -- mismo criterio 404-no-403 que el
+  resto de la API para recursos ajenos. Idempotente: si `read` ya era `true`, no vuelve a
+  escribir la fila (evita un `UPDATE` innecesario, aunque tampoco sería incorrecto).
+- **Orden estable — `createdAt DESC, id DESC`**: `findByRecipientId` (usada por el
+  listado paginado) agrega `id DESC` como desempate secundario. Dos notificaciones
+  creadas en el mismo milisegundo (posible bajo escritura concurrente -- ej. dos
+  reacciones casi simultáneas a distintos posts del mismo usuario) ya no dependen del
+  orden físico de la tabla para mantenerse estables entre página y página bajo paginación
+  por offset.
+- **`statusId`/`followRequestId` -- campos explícitos, nunca metadata genérica**: se
+  evaluó una columna JSON/metadata genérica y se descartó a favor de columnas `UUID`
+  explícitas, mismo patrón que `postId` ya establecido (`Notification` ya distinguía
+  recursos por campos tipados, no por un blob) -- más simple de leer, más simple de
+  indexar si hiciera falta en el futuro, y consistente con cómo ya se modela el resto de
+  la entidad. Ninguno de los dos tiene FK (ver `V13` y la nota en Entidades y relaciones
+  más arriba) -- mismo criterio que `postId`, y por una razón aún más fuerte acá:
+  ni `Status` ni `FollowRequest` tienen siquiera un escenario real de fila eliminada
+  (`Status` solo expira, `FollowRequest` conserva su historial terminal) que una FK
+  necesitara resolver con `ON DELETE SET NULL`.
+- **`notify()` -- overload en vez de romper la firma existente**: se agregó
+  `notify(recipient, actor, type, postId, statusId, followRequestId)` como la firma
+  completa, y se conservó `notify(recipient, actor, type, postId)` como overload de
+  compatibilidad (delega en la completa con `null, null`) -- los tres callers que solo
+  necesitaban `postId` o ningún recurso (`CommentService`, `PostResponseService`,
+  `FollowService.follow` para `NEW_FOLLOWER`) no cambiaron ni una línea. Los tres que
+  necesitaban el dato nuevo (`StatusService.react` → `statusId`,
+  `FollowService.requestFollow` → `followRequestId` para `FOLLOW_REQUEST_RECEIVED`,
+  `FollowRequestService.accept` → `followRequestId` para `FOLLOW_REQUEST_ACCEPTED`, este
+  último para contexto, no porque haya una acción pendiente sobre ese trámite) ya tenían
+  la entidad/id cargado en el mismo método -- ninguna query adicional.
+- **WebSocket -- mismo DTO, sin canal nuevo**: `NotificationService.notify()` sigue
+  siendo el único punto de push (`convertAndSendToUser` a `/user/queue/notifications`,
+  sin cambios de canal) y sigue usando el mismo `NotificationResponse` que
+  `GET /api/notifications` -- extender el DTO con `statusId`/`followRequestId` los deja
+  disponibles en WS automáticamente, sin trabajo adicional ni riesgo de que REST y WS
+  diverjan.
+- **`FOLLOW_REQUEST_RECEIVED`/`FOLLOW_REQUEST_ACCEPTED` -- sin endpoint paralelo,
+  `FollowRequestService` sigue siendo la única fuente de verdad**: el objetivo de esta
+  fase era que la notificación llevara suficiente contexto (`followRequestId`) para que
+  el frontend pueda llamar a `POST /api/follow-requests/{id}/accept`/`reject` (endpoints
+  ya existentes desde Fase 9.3, sin tocar) -- nunca crear una ruta nueva tipo
+  `POST /api/notifications/{id}/accept-follow`. Un `followRequestId` de una notificación
+  vieja puede apuntar a un trámite ya `ACCEPTED`/`REJECTED`/`CANCELLED` -- `Notification`
+  no duplica ese estado (no hay un campo `followRequestStatus` en la entidad); el
+  `409 Conflict` que ya devuelve `FollowRequestService` para un trámite no-`PENDING` es
+  la única fuente de verdad, sin importar por qué vía se llegó ahí.
+- **Nuevas notificaciones durante paginación por offset -- estrategia documentada, no
+  implementada como snapshot**: se evaluó cursor pagination y se descartó -- la API ya
+  usa `Page`/`Pageable` de forma consistente en todos los endpoints, y sobrediseñar un
+  mecanismo de snapshot/cursor solo para notificaciones rompería esa consistencia sin
+  una necesidad real todavía. La estrategia queda documentada para el frontend en
+  `FRONTEND_HANDOFF.md` (prepend en memoria + deduplicar por `id`, nunca asumir que las
+  páginas son un snapshot inmutable).
+- **Deuda técnica restante**: notification preferences, mute de notificaciones (mute de
+  usuario sigue sin afectar notifications, verificado de nuevo explícitamente en esta
+  fase), push notifications mobile, preferencias de notificación por email, borrar/
+  archivar notificaciones individualmente, agrupamiento de notificaciones (ej. "3
+  personas respondieron tu post").
 
 ## Persistencia
 
@@ -843,6 +925,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V10__add_user_blocks.sql` | tabla `user_blocks` |
 | `V11__add_user_mutes.sql` | tabla `user_mutes` |
 | `V12__add_post_response_types.sql` | `post_supports` → `post_responses` (`RENAME` in-place), `post_responses.type`/`updated_at`, migra `notifications.type = 'NEW_SUPPORT'` → `'NEW_POST_RESPONSE'` |
+| `V13__add_notification_resource_references.sql` | `notifications.status_id`, `notifications.follow_request_id` — ambas nullable, sin FK |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`
