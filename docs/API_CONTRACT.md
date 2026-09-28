@@ -70,6 +70,7 @@ observable) no requieren tocar esta documentación.
 | `CommentStatus` | `VISIBLE`, `FLAGGED`, `REMOVED` | Interno, mismo caso que `PostStatus.FLAGGED` (no asignado nunca) |
 | `CompanionIntent` | `TALK`, `DISTRACTION`, `WATCH_TOGETHER`, `MUSIC`, `LAUGH`, `JUST_COMPANY` | Modo compañía legacy (`/api/availability`) |
 | `NeedType` (Backend Debt B4B.1) | `LISTEN_TO_ME`, `TALK`, `GET_OPINION`, `DISTRACTION`, `JUST_COMPANY` | "Necesito compañía" (`/api/companion/need`). Dominio independiente de `CompanionIntent`/`OfferingType` — nunca se comparan ni convierten entre sí |
+| `OfferingType` (Backend Debt B4B.2) | `LISTEN`, `TALK`, `DISTRACT` | "Cómo puedo acompañar ahora" (`/api/companion/offering`). Dominio independiente de `CompanionIntent`/`NeedType`/`CompanionPreferenceType` futuro — nunca se comparan ni convierten entre sí pese a labels similares |
 | `StatusMood` | `WELL`, `NEED_DISTRACTION`, `DIFFICULT_DAY`, `NEED_TO_TALK`, `HERE_FOR_SOMEONE` | Estados de ánimo |
 | `StatusReactionType` | `WITH_YOU`, `WANT_TO_TALK`, `HERE_READING`, `NOT_ALONE` | Reacciones a un estado |
 | `PostResponseType` (Backend Debt B1) | `WITH_YOU`, `NOT_ALONE`, `HUG`, `READING`, `TELL_ME_MORE`, `LISTENING` | Responder a un post (§3). Dominio independiente de `StatusReactionType` — nunca se comparan ni convierten entre sí, aunque compartan alguna etiqueta |
@@ -1202,11 +1203,11 @@ con alguien que no seguís ni te sigue — ver § 8 y reglas de `POST /api/conve
 
 Backend Debt B4B.1 — primer PR del rediseño del dominio Companion (ver diseño B4A).
 "Necesito compañía ahora": declaración de corto plazo, vence a las **2 horas** (más
-corto que `Offering`, que vencerá a las 6hs cuando se implemente en B4B.2, y que
-`Status`, que vence a las 24hs). **Nunca se expone públicamente** — no existe ningún
-endpoint que muestre el `CompanionNeed` de otro usuario, solo `GET .../mine` contra el
-propio usuario autenticado. Pensado como input para el flujo futuro "Need → candidatos
-compatibles" (B4B.2), no para matching automático ni `CompanionMatch` (diferido).
+corto que `Offering`, que vence a las 6hs, ver § 7ter, y que `Status`, que vence a las
+24hs). **Nunca se expone públicamente** — no existe ningún endpoint que muestre el
+`CompanionNeed` de otro usuario, solo `GET .../mine` contra el propio usuario
+autenticado. Es el input de `GET /api/companion/offering/compatible` (§ 7ter) — nunca
+matching automático ni `CompanionMatch` (diferido).
 
 ### `PUT /api/companion/need`
 Reemplaza cualquier Need activo anterior tuyo (solo puede haber uno a la vez).
@@ -1228,6 +1229,85 @@ Tu Need activo actual.
 - **Response 200**: `CompanionNeedResponse`, **o literalmente el body `null` con status
   200** si no tenés ninguno activo — mismo criterio que `GET /api/availability/mine` y
   `GET /api/users/{userId}/status` (ausencia genuina de dato, nunca un 404).
+
+---
+
+## 7ter. Companion Offering + búsqueda (`/api/companion/offering`) — requiere autenticación
+
+Backend Debt B4B.2 — segundo PR del rediseño del dominio Companion (ver diseño B4A).
+"Cómo puedo acompañar ahora": declaración de mediano plazo, vence a las **6 horas**
+(mismo plazo que `Availability` legacy, más largo que `Need`, § 7bis). Desde este PR,
+`companion_offerings` es la fuente de verdad del **nuevo** dominio Companion —
+`availabilities` (legacy) sigue existiendo y sigue siendo la fuente de verdad exclusiva
+del contrato `/api/availability/**`. Ambas tablas coexisten temporalmente; ningún código
+lee las dos para responder la misma operación. Ver `BACKEND_ARCHITECTURE.md` § Companion
+Offering para el wording completo de source-of-truth.
+
+### `PUT /api/companion/offering`
+Reemplaza cualquier Offering activa anterior tuya (solo puede haber una a la vez).
+- **Body** (`SetCompanionOfferingRequest`): `{ "type": "LISTEN | TALK | DISTRACT" }`
+- **Response 200** (`CompanionOfferingResponse`):
+  ```json
+  { "id": "uuid", "type": "LISTEN", "createdAt": "...", "expiresAt": "..." }
+  ```
+  Sin `UserSummary` — mismo criterio que `CompanionNeedResponse`, `/mine` siempre resuelve
+  contra el propio usuario autenticado.
+
+### `DELETE /api/companion/offering`
+Cancela tu Offering activa (si tenías una). Idempotente — no falla si no tenías ninguna.
+- **Response**: `204 No Content`.
+
+### `GET /api/companion/offering/mine`
+Tu Offering activa actual.
+- **Response 200**: `CompanionOfferingResponse`, **o literalmente el body `null` con
+  status 200** si no tenés ninguna activa — ausencia genuina de dato, nunca un 404.
+
+### `GET /api/companion/offering?type=LISTEN`
+Lista hasta 10 candidatos con Offering activa de ese tipo exacto, en **orden aleatorio**
+(MVP a propósito — sin ranking, sin relevancia, sin paginación, sin scoring).
+- **Query params**: `type` (obligatorio, uno de `LISTEN`, `TALK`, `DISTRACT`).
+- **Response 200**: `List<CompanionCandidateResponse>` (sin envelope de paginación):
+  ```json
+  [{ "user": { /* UserSummary */ }, "offeringType": "LISTEN", "expiresAt": "..." }]
+  ```
+- **Bloqueo**: excluye bilateralmente (ninguna dirección puede aparecer), mismo criterio
+  que la búsqueda legacy de `/api/availability`.
+- **Mute**: excluye, unilateralmente, a quien el autenticado silenció. Si A silenció a B,
+  B no aparece para A, pero A sigue apareciendo con normalidad para B.
+- **Sin filtro de `ProfileVisibility`, sin requerir follow** (decisión B4A #3): activar un
+  Offering es consentimiento específico para aparecer en superficies de Companion, incluso
+  con perfil `PRIVATE` y sin accepted follower. **Nunca desbloquea** perfil completo, bio,
+  posts ni status — `CompanionCandidateResponse` solo expone los 4 campos de `UserSummary`
+  más el tipo de Offering y su vencimiento.
+
+### `GET /api/companion/offering/compatible`
+Busca candidatos cuyo Offering sea compatible con tu **propio Need activo**, vía una
+matriz estática (nunca matching inteligente, sin scoring):
+
+| Tu Need | Offering compatible |
+|---|---|
+| `LISTEN_TO_ME` | `LISTEN` |
+| `TALK` | `TALK` |
+| `GET_OPINION` | `TALK` |
+| `DISTRACTION` | `DISTRACT` |
+| `JUST_COMPANY` | `LISTEN` |
+
+- **Response 200**: `List<CompanionCandidateResponse>`, mismas reglas de bloqueo/mute/
+  self-exclusion/límite que la búsqueda por tipo exacto.
+- **Sin Need activo**: `200` con **lista vacía** — no es un recurso inexistente, es la
+  ausencia de un criterio de búsqueda; nunca `404`.
+- Tu `Need` **nunca viaja en la respuesta** — ni el propio ni el de ningún candidato. Se
+  usa únicamente del lado del servidor para resolver el `OfferingType` compatible. El
+  `Need` de otros usuarios sigue sin exponerse por ningún endpoint (decisión B4A #10).
+
+**Flujo MVP completo** (decisión B4A #4): `PUT /api/companion/need` → `GET
+/api/companion/offering/compatible` → el usuario elige un candidato → `POST
+/api/conversations/{userId}` (§ 8, ya existente, sin cambios).
+
+**Qué NO cambia en este PR**: `/api/availability/**`, `AvailabilityController`,
+`ChatService` (sigue consultando `Availability` legacy), y `GET /api/users/{userId}/*`
+(no existe todavía un endpoint público de disponibilidad para `CompanionOffering` — eso
+es B4B.4). Nada de esto se retira ni se migra hasta B4B.3.
 
 ---
 
