@@ -28,7 +28,14 @@ com.byyourside.backend
 │                   endpoint de /api/auth que requiere JWT).
 │                   AuthSessionService/Session(Repository) + AuthSessionRevocationGuard
 │                   — refresh tokens con rotación y deteccion de reuse (Fase 1.5)
-├── availability    Modo compañía: Availability, CompanionIntent
+├── availability    Modo compañía LEGACY: Availability, CompanionIntent — pendiente de
+│                   convertirse en adapter sobre `companion` (Backend Debt B4B.3, ver
+│                   diseño B4A), sin fecha de retiro
+├── companion       Rediseño del dominio Companion (Backend Debt B4B, ver diseño B4A).
+│                   B4B.1: CompanionNeed, NeedType (LISTEN_TO_ME/TALK/GET_OPINION/
+│                   DISTRACTION/JUST_COMPANY) — "necesito compañía ahora", 2hs, NUNCA
+│                   expuesto públicamente (solo owner vía /mine). Sin Offering,
+│                   sin matching, sin CompanionMatch todavía — eso es B4B.2+
 ├── block           UserBlock, BlockPolicy (isBlockedBetween, punto central reutilizado
 │                   por profile/post/follow/chat/notification/status/discover/
 │                   availability), BlockService (bloqueo + limpieza transaccional) — Fase 9.4
@@ -86,7 +93,8 @@ User (users)
  ├─ 1:N → Notification como recipient / actor (notifications.recipient_id / actor_id)
  ├─ 1:N → Status (statuses.user_id)
  ├─ 1:N → StatusReaction como actor (status_reactions.actor_id)
- ├─ 1:N → Availability (availabilities.user_id)
+ ├─ 1:N → Availability (availabilities.user_id) — LEGACY, ver Backend Debt B4B.3
+ ├─ 1:N → CompanionNeed (companion_needs.user_id) — Backend Debt B4B.1
  ├─ 1:N → Conversation como userA / userB (conversations.user_a_id / user_b_id)
  ├─ 1:N → Message como sender (messages.sender_id)
  ├─ 1:N → EmailVerificationToken (email_verification_tokens.user_id)
@@ -114,7 +122,12 @@ Notification (notifications) — N:1 → User (recipient), N:1 → User (actor).
                         tres
 Status (statuses) — N:1 → User
 StatusReaction (status_reactions) — N:1 → Status, N:1 → User (actor), UNIQUE(status_id, actor_id)
-Availability (availabilities) — N:1 → User
+Availability (availabilities) — N:1 → User — LEGACY, ver Backend Debt B4B.3
+CompanionNeed (companion_needs, Backend Debt B4B.1) — N:1 → User, `type` (`NeedType`),
+              UNIQUE(user_id). A diferencia de Availability, la exclusividad de "un Need
+              activo por usuario" está garantizada **a nivel DB**, no solo por el orden
+              delete-then-insert del service — ver § "Companion Need (Backend Debt
+              B4B.1)" más abajo. Nunca expuesto vía API salvo al propio owner.
 Conversation (conversations) — N:1 → User (userA), N:1 → User (userB), UNIQUE(user_a_id, user_b_id)
                                  (userA/userB en orden canónico por UUID string, para no duplicar
                                  la conversación sin importar quién la inició)
@@ -895,6 +908,44 @@ eran estado local sin backend.
   archivar notificaciones individualmente, agrupamiento de notificaciones (ej. "3
   personas respondieron tu post").
 
+## Companion Need (Backend Debt B4B.1)
+
+Primer PR del rediseño del dominio Companion (ver diseño B4A) — "necesito compañía
+ahora", 2hs, nunca expuesto públicamente. Ver `API_CONTRACT.md` § 7bis para el contrato.
+
+- **`UNIQUE(user_id)` a nivel DB (V14)**: a diferencia de `Availability`, la exclusividad
+  de "un Need activo por usuario" no depende solo del orden `deleteByUserId` + `save` del
+  service — la constraint es la última defensa real contra dos filas para el mismo
+  usuario. Sin índices adicionales: el índice que crea la propia `UNIQUE` ya resuelve la
+  única query real (`findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc`).
+- **`CompanionNeedWriter` — bean separado a propósito, mismo patrón que
+  `AuthSessionRevocationGuard`** (ver § Sesiones): `CompanionNeedService.setNeed` no hace
+  el `deleteByUserId` + `save` directamente — delega en `CompanionNeedWriter.replace`,
+  anotado `@Transactional(propagation = REQUIRES_NEW)`, viviendo en un `@Component`
+  distinto (la misma razón que ahí: `REQUIRES_NEW` se ignora en silencio si la llamada es
+  self-invocation dentro de la misma clase). Esto aísla cada intento de reemplazo en su
+  propia transacción: si la carrera de `UNIQUE(user_id)` la revierte, la transacción del
+  caller (que solo leyó el `User`) queda sana y puede reintentar con una conexión limpia,
+  en vez de quedar en el estado "current transaction is aborted" que Postgres impone al
+  resto de una transacción después de cualquier error de SQL.
+- **Orden de flush explícito dentro de `replace`**: hace `deleteByUserId` +
+  `flush()` antes de `save` + `flush()` del reemplazo, en vez de dejar que ambas
+  operaciones viajen en un solo flush implícito al final de la transacción. Necesario
+  porque el orden de flush por defecto de Hibernate ejecuta *inserts antes que deletes*
+  dentro de un mismo flush — sin este orden explícito, el `INSERT` del reemplazo
+  violaría `UNIQUE(user_id)` contra la fila vieja todavía no borrada, incluso en el caso
+  normal sin ninguna concurrencia real.
+- **Reintento acotado (`MAX_ATTEMPTS = 3`)**: ante `DataIntegrityViolationException`,
+  `CompanionNeedService` reintenta — para el segundo intento, la fila del request que
+  ganó la carrera ya está commiteada, así que el reintento la borra y la reemplaza sin
+  conflicto. Si los tres intentos fallan (escenario extremo, no observado en tests),
+  responde `409 Conflict` en vez de propagar un `500` sin manejar.
+- **Test de concurrencia real** (`CompanionNeedControllerIntegrationTest.
+  shouldNeverLeaveTwoNeeds_whenTwoPutRequestsRaceConcurrently`): dos `PUT` concurrentes
+  de verdad (threads distintos, sincronizados con `CountDownLatch`, contra el Postgres
+  real de Testcontainers) — verifica que ambas responden `200`, que nunca quedan dos
+  filas, y que el Need final queda en un estado válido y consultable.
+
 ## Persistencia
 
 - **PostgreSQL** vía Spring Data JPA / Hibernate. `ddl-auto: validate` — el esquema
@@ -926,6 +977,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V11__add_user_mutes.sql` | tabla `user_mutes` |
 | `V12__add_post_response_types.sql` | `post_supports` → `post_responses` (`RENAME` in-place), `post_responses.type`/`updated_at`, migra `notifications.type = 'NEW_SUPPORT'` → `'NEW_POST_RESPONSE'` |
 | `V13__add_notification_resource_references.sql` | `notifications.status_id`, `notifications.follow_request_id` — ambas nullable, sin FK |
+| `V14__add_companion_needs.sql` (Backend Debt B4B.1) | `companion_needs` — primera tabla del nuevo dominio Companion (ver diseño B4A), con `UNIQUE(user_id)`: garantiza a nivel DB "máximo un Need activo por usuario" (B4B.1 no conserva historial, el Need anterior se reemplaza). Sin índices adicionales — el índice que crea la propia constraint `UNIQUE` ya resuelve la única query real (lookup por `user_id`); a diferencia de `V3` (`availabilities`, cero índices y sin ninguna garantía de unicidad) |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`
@@ -1016,7 +1068,8 @@ un problema actual, pero es una limitación a tener en cuenta antes de escalar.
 ## Testing
 
 - **Integration tests** (`src/test/java/.../*ControllerIntegrationTest.java` y afines)
-  para: admin, auth, availability, chat, comment, follow (`FollowControllerIntegrationTest`,
+  para: admin, auth, availability, chat, comment, `companion.CompanionNeedControllerIntegrationTest`
+  (Backend Debt B4B.1), follow (`FollowControllerIntegrationTest`,
   `FollowRequestIntegrationTest`), notification, post (`PostControllerIntegrationTest`,
   `PostPrivacyIntegrationTest`), report, status, user (`UserControllerIntegrationTest`,
   `ProfilePrivacyIntegrationTest`), `block.BlockIntegrationTest` (Fase 9.4), más

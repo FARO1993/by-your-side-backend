@@ -68,7 +68,8 @@ observable) no requieren tocar esta documentación.
 | `PostVisibility` | `PUBLIC`, `FOLLOWERS_ONLY`, `PRIVATE` | Crear/editar/leer posts |
 | `PostStatus` | `VISIBLE`, `FLAGGED`, `REMOVED` | Interno. **`FLAGGED` existe en el enum pero ningún código lo asigna actualmente** (ver `FRONTEND_HANDOFF.md` § gaps). No se expone en `PostResponse`. |
 | `CommentStatus` | `VISIBLE`, `FLAGGED`, `REMOVED` | Interno, mismo caso que `PostStatus.FLAGGED` (no asignado nunca) |
-| `CompanionIntent` | `TALK`, `DISTRACTION`, `WATCH_TOGETHER`, `MUSIC`, `LAUGH`, `JUST_COMPANY` | Modo compañía (availability) |
+| `CompanionIntent` | `TALK`, `DISTRACTION`, `WATCH_TOGETHER`, `MUSIC`, `LAUGH`, `JUST_COMPANY` | Modo compañía legacy (`/api/availability`) |
+| `NeedType` (Backend Debt B4B.1) | `LISTEN_TO_ME`, `TALK`, `GET_OPINION`, `DISTRACTION`, `JUST_COMPANY` | "Necesito compañía" (`/api/companion/need`). Dominio independiente de `CompanionIntent`/`OfferingType` — nunca se comparan ni convierten entre sí |
 | `StatusMood` | `WELL`, `NEED_DISTRACTION`, `DIFFICULT_DAY`, `NEED_TO_TALK`, `HERE_FOR_SOMEONE` | Estados de ánimo |
 | `StatusReactionType` | `WITH_YOU`, `WANT_TO_TALK`, `HERE_READING`, `NOT_ALONE` | Reacciones a un estado |
 | `PostResponseType` (Backend Debt B1) | `WITH_YOU`, `NOT_ALONE`, `HUG`, `READING`, `TELL_ME_MORE`, `LISTENING` | Responder a un post (§3). Dominio independiente de `StatusReactionType` — nunca se comparan ni convierten entre sí, aunque compartan alguna etiqueta |
@@ -1194,6 +1195,39 @@ Lista hasta 10 personas disponibles ahora mismo con ese `intent`, en **orden ale
 
 **Relación con chat**: el modo compañía es la única forma de iniciar una conversación
 con alguien que no seguís ni te sigue — ver § 8 y reglas de `POST /api/conversations/{userId}`.
+
+---
+
+## 7bis. Companion Need (`/api/companion/need`) — requiere autenticación
+
+Backend Debt B4B.1 — primer PR del rediseño del dominio Companion (ver diseño B4A).
+"Necesito compañía ahora": declaración de corto plazo, vence a las **2 horas** (más
+corto que `Offering`, que vencerá a las 6hs cuando se implemente en B4B.2, y que
+`Status`, que vence a las 24hs). **Nunca se expone públicamente** — no existe ningún
+endpoint que muestre el `CompanionNeed` de otro usuario, solo `GET .../mine` contra el
+propio usuario autenticado. Pensado como input para el flujo futuro "Need → candidatos
+compatibles" (B4B.2), no para matching automático ni `CompanionMatch` (diferido).
+
+### `PUT /api/companion/need`
+Reemplaza cualquier Need activo anterior tuyo (solo puede haber uno a la vez).
+- **Body** (`SetCompanionNeedRequest`): `{ "type": "LISTEN_TO_ME | TALK | GET_OPINION | DISTRACTION | JUST_COMPANY" }`
+- **Response 200** (`CompanionNeedResponse`):
+  ```json
+  { "id": "uuid", "type": "TALK", "createdAt": "...", "expiresAt": "..." }
+  ```
+  Nótese que, a diferencia de `AvailabilityResponse`, **no incluye `UserSummary`** — el
+  Need nunca se expone a otro usuario, así que "de quién es" siempre es implícito (el
+  usuario autenticado).
+
+### `DELETE /api/companion/need`
+Cancela tu Need activo (si tenías uno). Idempotente — no falla si no tenías ninguno.
+- **Response**: `204 No Content`.
+
+### `GET /api/companion/need/mine`
+Tu Need activo actual.
+- **Response 200**: `CompanionNeedResponse`, **o literalmente el body `null` con status
+  200** si no tenés ninguno activo — mismo criterio que `GET /api/availability/mine` y
+  `GET /api/users/{userId}/status` (ausencia genuina de dato, nunca un 404).
 
 ---
 
