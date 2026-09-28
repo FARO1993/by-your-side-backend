@@ -46,12 +46,16 @@ com.byyourside.backend
 │                   acceso, cada query que lo necesita filtra directo (ver más abajo)
 ├── notification     Notification, NotificationType — generadas internamente, nunca por API directa
 ├── post            Post, PostVisibility, PostStatus, PostAccessPolicy (Fase 9.1: "puede
-│                   este viewer ver este post", reutilizado por comment/support)
+│                   este viewer ver este post", reutilizado por comment/postresponse)
+├── postresponse    PostResponse, PostResponseType (WITH_YOU/NOT_ALONE/HUG/READING/
+│                   TELL_ME_MORE/LISTENING), PostResponseService — respuesta tipada a un
+│                   post, reemplaza al antiguo paquete `support`/PostSupport (Backend
+│                   Debt B1). Sin "PostResponsePolicy": reutiliza PostAccessPolicy tal
+│                   cual, la respuesta nunca es su propio control de acceso
 ├── report          Report, ReportReason/Status/TargetType — moderación
 ├── security        JWT: JwtService, JwtAuthenticationFilter, UserPrincipal, CustomUserDetailsService
 ├── status          "Estado de ánimo": Status, StatusMood, StatusReaction, StatusReactionType
 ├── storage         Cloudinary: ImageStorageService (interfaz) + CloudinaryImageStorageService
-├── support         PostSupport — "apoyo" (like) a un post
 ├── user            User, UserRole, UserStatus, ProfileVisibility, ProfileAccessPolicy
 │                   (Fase 9.1) — entidad central, referenciada por casi todo
 └── websocket       WebSocketConfig, StompAuthChannelInterceptor
@@ -75,7 +79,7 @@ User (users)
  ├─ 1:N → Follow como following (follows.following_id)
  ├─ 1:N → Report como reporter (reports.reporter_id)
  ├─ 1:N → Report como reviewedBy (reports.reviewed_by_id, nullable)
- ├─ 1:N → PostSupport (post_supports.user_id)
+ ├─ 1:N → PostResponse (post_responses.user_id, antes post_supports)
  ├─ 1:N → Notification como recipient / actor (notifications.recipient_id / actor_id)
  ├─ 1:N → Status (statuses.user_id)
  ├─ 1:N → StatusReaction como actor (status_reactions.actor_id)
@@ -90,13 +94,16 @@ User (users)
 Post (posts)
  ├─ N:1 → User (author)
  ├─ 1:N → Comment
- └─ 1:N → PostSupport
+ └─ 1:N → PostResponse
 
 Comment (comments) — N:1 → Post, N:1 → User (author)
 Follow (follows) — N:1 → User (follower), N:1 → User (following), UNIQUE(follower_id, following_id)
 Report (reports) — N:1 → User (reporter), N:1 → User (reviewedBy, nullable). target_id/target_type
                     son una referencia POLIMÓRFICA (no FK) a Post/Comment/User.
-PostSupport (post_supports) — N:1 → Post, N:1 → User, UNIQUE(post_id, user_id)
+PostResponse (post_responses, Backend Debt B1 — tabla `post_supports` renombrada/
+              evolucionada in-place, ver V12) — N:1 → Post, N:1 → User, `type`
+              (`PostResponseType`), UNIQUE(post_id, user_id): una sola respuesta activa
+              por usuario/post, cambiar de tipo es UPDATE de la misma fila
 Notification (notifications) — N:1 → User (recipient), N:1 → User (actor), post_id opcional (no FK)
 Status (statuses) — N:1 → User
 StatusReaction (status_reactions) — N:1 → Status, N:1 → User (actor), UNIQUE(status_id, actor_id)
@@ -303,17 +310,17 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   viewer ver este post?" (`canView`), combinando estado (`PostStatus.VISIBLE`), dueño,
   `ProfileAccessPolicy` del autor, y `PostVisibility` + relación de follow. Reutilizado
   por `PostService.getPost`, `CommentService` (`createComment`, `getComments`) y
-  `PostSupportService.addSupport` -- antes de Fase 9.1, `CommentService` y
-  `PostSupportService` solo chequeaban que el post existiera (`existsById`), sin validar
-  visibilidad en absoluto.
+  `PostResponseService` (Backend Debt B1, antes `PostSupportService.addSupport`) -- antes
+  de Fase 9.1, `CommentService` y `PostSupportService` solo chequeaban que el post
+  existiera (`existsById`), sin validar visibilidad en absoluto.
   - **Cero cambios de código en Fase 9.3**: `canView` ya delegaba en
     `profileAccessPolicy.canViewFullProfile(viewerId, author)` para decidir si el
     perfil `PRIVATE` bloquea al viewer -- al cambiar esa policy (arriba), `canView`
     adopta la nueva semántica de "accepted follower ve posts" sin que haga falta tocar
     ni una línea suya. Exactamente el resultado que busca centralizar la regla en un
     solo lugar.
-  - **No gatea `updateComment`/`deleteComment` ni `removeSupport`**: gestionar tu propio
-    comentario/apoyo ya existente no vuelve a validar la visibilidad *actual* del post
+  - **No gatea `updateComment`/`deleteComment` ni `deleteResponse`**: gestionar tu propio
+    comentario/respuesta ya existente no vuelve a validar la visibilidad *actual* del post
     (podés seguir borrando tu comentario aunque el post ya no sea visible para vos) --
     es una decisión deliberada, distinta de crear contenido nuevo o listar el existente.
 - **Estrategia de queries (feed y "posts por usuario") -- sin N+1**: la visibilidad se
@@ -334,7 +341,7 @@ Dos capas independientes, con una regla de dominancia entre ellas.
     perfil público O follower efectivo abre acceso a `PUBLIC`+`FOLLOWERS_ONLY`;
     `:isOwner` sigue siendo la única rama que además incluye `PRIVATE`.
   - `PostAccessPolicy.canView`, en cambio, opera sobre una sola entidad ya cargada
-    (detalle de post, comment, support) -- ahí una consulta puntual de follow
+    (detalle de post, comment, respuesta) -- ahí una consulta puntual de follow
     (`existsByFollowerIdAndFollowingId`) es aceptable, no hay bucle.
 - **`getUserPosts` nunca devuelve 404 por privacidad**: si `userId` existe pero su perfil
   es `PRIVATE` y el viewer no es el dueño ni un follower efectivo, la query no matchea
@@ -391,9 +398,9 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   acaba de crear, para poder ofrecer "cancelar" de inmediato.
 - **Notificaciones**: `FOLLOW_REQUEST_RECEIVED` (al crear la solicitud) y
   `FOLLOW_REQUEST_ACCEPTED` (al aceptarla), mismo mecanismo (`NotificationService.notify`,
-  WebSocket + persistida) que `NEW_FOLLOWER`/`NEW_COMMENT`/`NEW_SUPPORT`. **Rechazar no
-  notifica** -- decisión de producto, no aporta valor suficiente como para justificar
-  avisarle al requester que lo rechazaron.
+  WebSocket + persistida) que `NEW_FOLLOWER`/`NEW_COMMENT`/`NEW_POST_RESPONSE`.
+  **Rechazar no notifica** -- decisión de producto, no aporta valor suficiente como para
+  justificar avisarle al requester que lo rechazaron.
 - **`FollowState`** (paquete `follow`, enum `NONE`/`REQUESTED`/`FOLLOWING`): resumen de
   "cómo estoy parado hoy frente a esta persona", expuesto en `PublicUserProfileResponse`,
   `DiscoverUserResponse` y `FollowResponse`. Distinto de `FollowRequestStatus` (el
@@ -440,7 +447,8 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   `profileVisibility`) hace que `PostAccessPolicy.canView` (que ya delegaba ahí para
   `FOLLOWERS_ONLY`/`PRIVATE`) empiece a bloquear también el acceso a posts `PUBLIC` de un
   perfil `PUBLIC` — sin tocar `PostAccessPolicy`, `CommentService` ni
-  `PostSupportService`. Cero duplicación de lógica.
+  `PostResponseService` (Backend Debt B1, antes `PostSupportService`). Cero duplicación de
+  lógica.
 - **Asimetría deliberada en `getPublicProfile`**: el chequeo de bloqueo tiene dos ramas
   con tratamiento distinto, y **no** es un descuido:
   - Si el **target** bloqueó al viewer → `404 Not Found` antes de siquiera calcular
@@ -505,8 +513,8 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   usuario-a-usuario detectado en la auditoría de esta fase que no pasa por ninguna policy
   existente, así que necesitó su propio `isBlockedBetween` explícito (mismo `404`
   genérico que un status inexistente). `removeReaction` (quitar tu propia reacción) no se
-  tocó — mismo criterio que `removeSupport`/editar tu comentario: gestionar algo tuyo ya
-  hecho no es crear una interacción nueva.
+  tocó — mismo criterio que `PostResponseService.deleteResponse`/editar tu comentario:
+  gestionar algo tuyo ya hecho no es crear una interacción nueva.
 - **Moderación/reportes intactos**: `ReportService`/`deletePost`/`deleteComment` no pasan
   por `BlockPolicy` en absoluto — un bloqueo nunca impide reportar a alguien ni le
   quita/agrega capacidades a un moderador/admin. Verificado explícitamente con un test
@@ -575,11 +583,13 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   muted del listado de sugerencias para el muter. Si ya existe una conversación entre
   ambos, `ChatService.getOrCreateConversation` sigue funcionando igual (no fue tocado en
   esta fase) — mute nunca corta la posibilidad de contacto directo ya establecida.
-- **Chat, notificaciones, comentarios/apoyo, acceso directo a perfil/post — sin cambios,
-  por decisión explícita**: ninguno de estos módulos fue tocado. `ChatService`,
-  `NotificationService.notify()`, `CommentService`, `PostSupportService`,
-  `PostAccessPolicy.canView` y `ProfileAccessPolicy.canViewFullProfile` no importan nada
-  del paquete `mute` ni lo chequean. La razón de fondo, documentada también en
+- **Chat, notificaciones, comentarios/respuestas, acceso directo a perfil/post — sin
+  cambios, por decisión explícita**: ninguno de estos módulos fue tocado. `ChatService`,
+  `NotificationService.notify()`, `CommentService`, `PostResponseService` (Backend Debt
+  B1, antes `PostSupportService`), `PostAccessPolicy.canView` y
+  `ProfileAccessPolicy.canViewFullProfile` no importan nada del paquete `mute` ni lo
+  chequean (verificado de nuevo para `PostResponseService` en Backend Debt B1, ver más
+  abajo). La razón de fondo, documentada también en
   `API_CONTRACT.md` § 13: mute afecta *lo que el sistema arma para vos* (feed, discover,
   listados agregados), nunca *lo que vos accedés directamente* ni *lo que otros pueden
   seguir haciendo con vos* (comentar, apoyar, escribirte). Silenciar notificaciones
@@ -607,6 +617,126 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   cercanos"/audiencias personalizadas/círculos, preferencias de recomendación,
   anti-spam, reporte automático al silenciar.
 
+## Respuestas a un post (Backend Debt B1)
+
+Reemplaza el "apoyo" binario anterior (`PostSupport`/`post_supports`) por una respuesta
+tipada por usuario/post. El frontend ofrece 6 respuestas posibles; antes de esta fase el
+backend solo persistía una de ellas ("Estoy con vos" == presencia binaria) y las otras 5
+eran estado local sin backend.
+
+- **`PostResponseType`** (paquete `postresponse`, enum `WITH_YOU`/`NOT_ALONE`/`HUG`/
+  `READING`/`TELL_ME_MORE`/`LISTENING`): dominio **independiente** de
+  `StatusReactionType` a propósito — posts y statuses son conceptos distintos aunque
+  compartan alguna etiqueta (`WITH_YOU`/`NOT_ALONE` existen en ambos enums, nunca se
+  comparan ni convierten entre sí). La categoría conceptual (PRESENCE: `WITH_YOU`/
+  `NOT_ALONE`/`HUG`; LISTENING: `READING`/`TELL_ME_MORE`/`LISTENING`) se **deriva** del
+  enum (`isPresence()`/`isListening()`) en vez de persistirse aparte — evita redundancia
+  en DB, y la agrupación PRESENCE/LISTENING de la query de conteos (ver más abajo) debe
+  actualizarse junto con el enum si algún día cambia.
+- **`PostResponse`** (paquete `postresponse`) reemplaza a `PostSupport`: `post`, `user`,
+  `type`, `createdAt`, `updatedAt`. `UNIQUE(post_id, user_id)`: una sola respuesta
+  **activa** por usuario/post — cambiar de tipo es un `UPDATE` de esa misma fila, nunca
+  una fila nueva. Nombrada igual que `com.byyourside.backend.post.dto.PostResponse` (el
+  DTO de "un post" que devuelven feed/detail/posts-by-user) por coincidencia de
+  vocabulario — son dos conceptos sin relación, y ningún archivo necesita importar ambas
+  clases a la vez (la entidad vive en `postresponse`, el DTO en `post.dto`).
+- **Evolución de tabla in-place, no tabla paralela (`V12`)**: `post_supports` se
+  renombra a `post_responses` (`ALTER TABLE ... RENAME`) en vez de crear una tabla nueva
+  y migrar filas — conserva `id`/`created_at` originales sin reescritura de PK, evita
+  duplicar temporalmente la fuente de verdad, y el `UNIQUE(post_id, user_id)` ya
+  existente ya era exactamente la regla que necesita `PostResponse`. Toda fila histórica
+  (que antes solo representaba presencia binaria) recibe `type = 'WITH_YOU'` — único tipo
+  que existía conceptualmente antes de esta fase. Sin `CHECK` constraint sobre `type`
+  (mismo criterio que `notifications.type`/`status_reactions.type`, ver `V1`).
+  - **Detalle crítico encontrado en la auditoría**: `NotificationType.NEW_SUPPORT` deja
+    de existir en el enum de Java (se reemplaza por `NEW_POST_RESPONSE`, ver más abajo).
+    Sin migrar también `notifications.type = 'NEW_SUPPORT'` → `'NEW_POST_RESPONSE'` en
+    la misma `V12`, cualquier notificación histórica de apoyo rompía la deserialización
+    de `@Enumerated(EnumType.STRING)` al leerla (`GET /api/notifications` tiraba
+    `IllegalArgumentException` para cualquier usuario con notificaciones de apoyo
+    previas a esta fase). Ver `V12__add_post_response_types.sql`.
+- **`PostResponseService`** (paquete `postresponse`) reemplaza a `PostSupportService`,
+  único punto de mutación sobre `PostResponse` -- tanto los endpoints nuevos (`PUT`/
+  `DELETE .../response`) como los legacy (`POST`/`DELETE .../support`) llaman acá, nunca
+  a `PostResponseRepository` directamente desde el controller. Una sola fuente de
+  verdad: los 4 endpoints leen/escriben la misma fila.
+  - **`upsertResponse`**: sin fila previa → `INSERT` + notifica (`NEW_POST_RESPONSE`,
+    solo la primera respuesta de este usuario a este post). Con fila previa del mismo
+    tipo → no-op idempotente (`UPDATE` sin cambios), sin notificar. Con fila previa de
+    otro tipo → `UPDATE` de esa misma fila, sin notificar (cambiar de tipo no es una
+    respuesta nueva).
+  - **`deleteResponse`**: idempotente, no notifica. Volver a responder después de un
+    delete (`upsertResponse` de nuevo) es una respuesta activa nueva y sí notifica —
+    decisión explícita: el delete real borró la fila, así que no hay estado que
+    distinga "nunca respondió" de "respondió y borró", ni falta hacerlo.
+  - **`rejectSelfResponse`**: el autor no puede responder a su propio post (`400`).
+    **Cambio de comportamiento**: antes de esta fase, `PostSupportService.addSupport` no
+    validaba autoría — un usuario podía apoyarse a sí mismo. Ahora se rechaza en los 4
+    endpoints (nuevo y legacy) sin excepción — no se confía en que el frontend nunca
+    mande esa request.
+  - **Compatibilidad legacy (`addLegacySupport`/`removeLegacySupport`)**: preservan el
+    contrato ORIGINAL exacto de `PostSupportService` (`409` si ya existía cualquier
+    respuesta propia en vez de upsert silencioso; `404` si no había ninguna al borrar,
+    en vez del `200` idempotente del endpoint nuevo) -- para no sorprender a un
+    consumidor que ya integraba contra ese comportamiento, mientras ambos pares de
+    endpoints operan sobre la misma fila/repositorio (nunca una segunda fuente de
+    verdad).
+- **Counts -- agregado batch, nunca N+1**: `PostResponseRepository.countGroupedByPostIds`
+  trae `presenceCount`/`listeningCount` para toda una página en una sola query
+  (`SUM(CASE WHEN type IN (...) THEN 1 ELSE 0 END)` agrupado por post, mismo patrón que
+  `PostSupportCountProjection` antes pero con dos agregados en vez de uno). El "tipo de
+  respuesta del usuario actual" por página usa `findByUserIdAndPostIds` -- devuelve las
+  entidades (no una projection con el enum) porque `r.getPost().getId()` no dispara una
+  query adicional sobre un proxy `LAZY` (Hibernate resuelve el id del proxy sin
+  inicializarlo) y evita cualquier ambigüedad de mapeo enum-vs-`String` en una interface
+  projection. `PostService.enrichAndMap`/`getPost` resuelven ambas queries una sola vez
+  por página/detalle, igual que ya hacían con `supportCounts`/`supportedPostIds`.
+- **`PostAccessPolicy` sin cambios**: `PostResponseService` reutiliza `canView` tal cual
+  -- no existe un "PostResponsePolicy" separado. Bloqueo (Fase 9.4, vía
+  `ProfileAccessPolicy` dentro de `canView`) y visibilidad normal cortan la respuesta
+  antes de llegar a `rejectSelfResponse`; mute (Fase 9.5) **no** se chequea ahí a
+  propósito -- si A silenció a B pero puede acceder directamente al post de B (mute
+  nunca es control de acceso), A puede responder con total normalidad.
+- **`NotificationType.NEW_SUPPORT` → `NEW_POST_RESPONSE`**: una sola semántica clara en
+  vez de mantener dos nombres para la misma acción -- ahora representa cualquier
+  `PostResponseType`, no solo el soporte binario anterior. **Cambio de contrato**:
+  cualquier consumidor que compare contra el string literal `"NEW_SUPPORT"` debe
+  actualizarse (ver `API_CONTRACT.md`, `FRONTEND_HANDOFF.md`, `WEBSOCKET_CONTRACT.md`).
+  `NotificationService.notify()` no cambió de forma -- mismo método genérico
+  (`recipient, actor, type, postId`), mismo canal WS (`/user/queue/notifications`), sin
+  canal nuevo. Se evaluó agregar un campo `responseType` estructurado al payload de
+  notificación (para que el frontend muestre algo más contextual que "tenés una
+  respuesta nueva") y se **difirió**: hubiera requerido tocar la firma de `notify()`
+  compartida por 5+ llamadores (follow, comment, status, follow request) para un solo
+  caso de uso, y el frontend ya puede pedir el detalle del post (`presenceCount`/
+  `listeningCount`/`currentUserResponseType`) usando el `postId` que sí viaja. Deuda
+  técnica considerada, no descuido.
+- **Concurrencia**: `UNIQUE(post_id, user_id)` + `catch(DataIntegrityViolationException)`
+  en el `INSERT` de `upsertResponse` (mismo patrón que `BlockService`/`MuteService`) --
+  pero a diferencia de esos, acá la carrera SÍ aplica el `type` pedido por la request que
+  pierde la carrera (como `UPDATE` sobre la fila que ganó), en vez de tratarla como
+  no-op: el payload de esta acción importa (no es un simple booleano bloqueado/no
+  bloqueado), así que perder la carrera de inserción no debe perder la intención del
+  usuario. Solo la request que efectivamente insertó notifica -- ninguna notificación
+  duplicada bajo esta carrera. `PUT`+`DELETE` simultáneos no tienen manejo especial más
+  allá de la integridad transaccional normal (row-level locking de Postgres en
+  `UPDATE`/`DELETE`) -- carrera aceptada, mismo criterio de "no sobrecomplicar" que otras
+  carreras ya documentadas en este archivo.
+- **`deletePost`/user deletion -- sin cambios de política**: `PostService.deletePost` es
+  un soft-delete (`status = REMOVED`, la fila `Post` nunca se borra), así que no hay
+  ninguna cascada que gestionar para `PostResponse` -- las respuestas de un post
+  "borrado" quedan como filas históricas inertes (el post ya no aparece en ninguna
+  superficie que lo requeriría, vía `PostAccessPolicy`/`PostStatus.VISIBLE`), mismo
+  tratamiento que ya tenían comments/supports antes de esta fase. `post_responses.user_id
+  REFERENCES users(id)` sin cascade, consistente con el resto del esquema (no existe una
+  feature de borrado de usuario).
+- **Deuda técnica restante**: notification preferences (silenciar notificaciones de
+  respuestas específicamente), historial de respuestas (solo se guarda la activa),
+  múltiples respuestas simultáneas por usuario, reaction emojis/custom response, ranking,
+  gamificación, refactor de `StatusReaction` para compartir código con `PostResponse`
+  (evaluado y descartado -- dominios distintos a propósito), campo `responseType`
+  estructurado en `Notification` (ver arriba).
+
 ## Persistencia
 
 - **PostgreSQL** vía Spring Data JPA / Hibernate. `ddl-auto: validate` — el esquema
@@ -625,7 +755,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 
 | Versión | Contenido |
 |---|---|
-| `V1__init_schema.sql` | `users`, `posts`, `comments`, `follows`, `reports`, `post_supports`, `notifications`, `statuses`, `status_reactions` |
+| `V1__init_schema.sql` | `users`, `posts`, `comments`, `follows`, `reports`, `post_supports` (renombrada a `post_responses` en `V12`), `notifications`, `statuses`, `status_reactions` |
 | `V2__add_chat_tables.sql` | `conversations`, `messages` |
 | `V3__add_availability_table.sql` | `availabilities` |
 | `V4__add_email_verification.sql` | `users.email_verified` / `users.email_verified_at`, tabla `email_verification_tokens` |
@@ -635,6 +765,8 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V8__add_profile_visibility.sql` | `users.profile_visibility` |
 | `V9__add_follow_requests.sql` | tabla `follow_requests` |
 | `V10__add_user_blocks.sql` | tabla `user_blocks` |
+| `V11__add_user_mutes.sql` | tabla `user_mutes` |
+| `V12__add_post_response_types.sql` | `post_supports` → `post_responses` (`RENAME` in-place), `post_responses.type`/`updated_at`, migra `notifications.type = 'NEW_SUPPORT'` → `'NEW_POST_RESPONSE'` |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`

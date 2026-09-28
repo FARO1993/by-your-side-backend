@@ -144,8 +144,11 @@ Emitido por `NotificationService.notify(...)`, llamado internamente desde `Follo
 
 - Nunca se autonotifica (si `recipient.id == actor.id`, `notify()` corta antes de
   guardar/emitir — no debería poder pasar en la práctica, pero está protegido).
-- `type` es uno de `NEW_FOLLOWER | NEW_COMMENT | NEW_SUPPORT | NEW_STATUS_REACTION` (ver
-  tabla de enums en `API_CONTRACT.md`).
+- `type` es uno de `NEW_FOLLOWER | NEW_COMMENT | NEW_POST_RESPONSE | NEW_STATUS_REACTION`
+  (ver tabla de enums en `API_CONTRACT.md`). **Backend Debt B1**: `NEW_SUPPORT` fue
+  renombrado a `NEW_POST_RESPONSE` — representa cualquier `PostResponseType`, no solo el
+  soporte binario anterior. Cambio de contrato: un consumidor que compare contra el
+  string literal `"NEW_SUPPORT"` debe actualizarse.
 
 ## Cómo se resuelve el destinatario
 

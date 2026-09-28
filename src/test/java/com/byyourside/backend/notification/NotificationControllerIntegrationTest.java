@@ -10,7 +10,7 @@ import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.post.Post;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.post.PostVisibility;
-import com.byyourside.backend.support.PostSupportRepository;
+import com.byyourside.backend.postresponse.PostResponseRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -66,7 +66,7 @@ class NotificationControllerIntegrationTest {
     private PostRepository postRepository;
 
     @Autowired
-    private PostSupportRepository postSupportRepository;
+    private PostResponseRepository postResponseRepository;
 
     @Autowired
     private NotificationRepository notificationRepository;
@@ -92,7 +92,7 @@ class NotificationControllerIntegrationTest {
     void setUp() throws Exception {
         notificationRepository.deleteAll();
         commentRepository.deleteAll();
-        postSupportRepository.deleteAll();
+        postResponseRepository.deleteAll();
         postRepository.deleteAll();
         followRequestRepository.deleteAll();
         followRepository.deleteAll();
@@ -187,7 +187,7 @@ class NotificationControllerIntegrationTest {
     }
 
     @Test
-    void shouldCreateNotification_whenSomeoneSupportsYourPost() throws Exception {
+    void shouldCreateNotification_whenSomeoneRespondsToYourPost() throws Exception { // Backend Debt B1: NEW_SUPPORT -> NEW_POST_RESPONSE
         Post post = postRepository.save(Post.builder()
                 .author(facu).content("mi post").visibility(PostVisibility.PUBLIC).build());
 
@@ -198,7 +198,7 @@ class NotificationControllerIntegrationTest {
         mockMvc.perform(get("/api/notifications")
                         .header("Authorization", "Bearer " + facuToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content[0].type").value("NEW_SUPPORT"));
+                .andExpect(jsonPath("$.content[0].type").value("NEW_POST_RESPONSE"));
     }
 
     @Test

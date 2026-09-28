@@ -7,7 +7,8 @@ import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequestRepository;
-import com.byyourside.backend.support.PostSupportRepository;
+import com.byyourside.backend.notification.NotificationRepository;
+import com.byyourside.backend.postresponse.PostResponseRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -71,10 +72,13 @@ class PostControllerIntegrationTest {
     private ObjectMapper objectMapper;
 
     @Autowired
-    private PostSupportRepository postSupportRepository;
+    private PostResponseRepository postResponseRepository;
 
     @Autowired
     private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
+    @Autowired
+    private NotificationRepository notificationRepository;
 
     private User mainUser;
     private String mainUserToken;
@@ -82,7 +86,8 @@ class PostControllerIntegrationTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        postSupportRepository.deleteAll();
+        notificationRepository.deleteAll();
+        postResponseRepository.deleteAll();
         postRepository.deleteAll();
         followRequestRepository.deleteAll();
         followRepository.deleteAll();
@@ -398,12 +403,19 @@ class PostControllerIntegrationTest {
                 .andExpect(jsonPath("$.content.length()").value(1));
     }
 
+    // Backend Debt B1: el autor no puede responder a su propio post (nueva
+    // regla, ver PostResponseService.rejectSelfResponse) -- estos tests
+    // legacy ahora usan un segundo usuario ("supporter") en vez del propio
+    // autor, ya que mainUserToken respondiendo a su propio post pasa a ser
+    // 400 en vez de 201.
+
     @Test
     void shouldAddSupport_whenAuthenticated() throws Exception {
         UUID postId = createPost(mainUserToken, "post que necesita apoyo");
+        String supporterToken = login(registerUser("supporter", "supporter@example.com").getUsername(), "secretpass123");
 
         mockMvc.perform(post("/api/posts/{postId}/support", postId)
-                        .header("Authorization", "Bearer " + mainUserToken))
+                        .header("Authorization", "Bearer " + supporterToken))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.supportCount").value(1))
                 .andExpect(jsonPath("$.supportedByCurrentUser").value(true));
@@ -412,26 +424,28 @@ class PostControllerIntegrationTest {
     @Test
     void shouldReturnConflict_whenSupportingSamePostTwice() throws Exception {
         UUID postId = createPost(mainUserToken, "post");
+        String supporterToken = login(registerUser("supporter", "supporter@example.com").getUsername(), "secretpass123");
 
         mockMvc.perform(post("/api/posts/{postId}/support", postId)
-                        .header("Authorization", "Bearer " + mainUserToken))
+                        .header("Authorization", "Bearer " + supporterToken))
                 .andExpect(status().isCreated());
 
         mockMvc.perform(post("/api/posts/{postId}/support", postId)
-                        .header("Authorization", "Bearer " + mainUserToken))
+                        .header("Authorization", "Bearer " + supporterToken))
                 .andExpect(status().isConflict());
     }
 
     @Test
     void shouldRemoveSupport_whenPreviouslySupported() throws Exception {
         UUID postId = createPost(mainUserToken, "post");
+        String supporterToken = login(registerUser("supporter", "supporter@example.com").getUsername(), "secretpass123");
 
         mockMvc.perform(post("/api/posts/{postId}/support", postId)
-                        .header("Authorization", "Bearer " + mainUserToken))
+                        .header("Authorization", "Bearer " + supporterToken))
                 .andExpect(status().isCreated());
 
         mockMvc.perform(delete("/api/posts/{postId}/support", postId)
-                        .header("Authorization", "Bearer " + mainUserToken))
+                        .header("Authorization", "Bearer " + supporterToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.supportCount").value(0))
                 .andExpect(jsonPath("$.supportedByCurrentUser").value(false));
@@ -440,25 +454,39 @@ class PostControllerIntegrationTest {
     @Test
     void shouldReturnNotFound_whenRemovingSupportNeverGiven() throws Exception {
         UUID postId = createPost(mainUserToken, "post");
+        String supporterToken = login(registerUser("supporter", "supporter@example.com").getUsername(), "secretpass123");
 
         mockMvc.perform(delete("/api/posts/{postId}/support", postId)
-                        .header("Authorization", "Bearer " + mainUserToken))
+                        .header("Authorization", "Bearer " + supporterToken))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void shouldReturnBadRequest_whenAuthorRespondsToOwnPost() throws Exception { // Backend Debt B1
+        UUID postId = createPost(mainUserToken, "post propio");
+
+        mockMvc.perform(post("/api/posts/{postId}/support", postId)
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("You cannot respond to your own post"));
     }
 
     @Test
     void shouldReflectSupportCountAndFlag_inFeed() throws Exception {
         UUID postId = createPost(mainUserToken, "post con apoyo");
+        String supporterToken = login(registerUser("supporter", "supporter@example.com").getUsername(), "secretpass123");
 
         mockMvc.perform(post("/api/posts/{postId}/support", postId)
-                        .header("Authorization", "Bearer " + mainUserToken))
+                        .header("Authorization", "Bearer " + supporterToken))
                 .andExpect(status().isCreated());
 
         mockMvc.perform(get("/api/posts/feed")
                         .header("Authorization", "Bearer " + mainUserToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[0].supportCount").value(1))
-                .andExpect(jsonPath("$.content[0].supportedByCurrentUser").value(true));
+                .andExpect(jsonPath("$.content[0].supportedByCurrentUser").value(false))
+                .andExpect(jsonPath("$.content[0].presenceCount").value(1))
+                .andExpect(jsonPath("$.content[0].listeningCount").value(0));
     }
 
     @Test

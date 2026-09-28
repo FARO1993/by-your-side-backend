@@ -5,9 +5,9 @@ import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.post.dto.CreatePostRequest;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.post.dto.UpdatePostRequest;
+import com.byyourside.backend.postresponse.PostResponseCountProjection;
+import com.byyourside.backend.postresponse.PostResponseRepository;
 import com.byyourside.backend.security.UserPrincipal;
-import com.byyourside.backend.support.PostSupportCountProjection;
-import com.byyourside.backend.support.PostSupportRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.dto.UserSummary;
@@ -33,7 +33,7 @@ public class PostService {
     private final PostRepository postRepository;
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
-    private final PostSupportRepository postSupportRepository;
+    private final PostResponseRepository postResponseRepository;
     private final PostAccessPolicy postAccessPolicy;
     private final BlockPolicy blockPolicy;
 
@@ -49,8 +49,8 @@ public class PostService {
                 .build();
 
         post = postRepository.save(post);
-        // Post recien creado: nunca puede tener apoyo todavia.
-        return toResponse(post, Set.of(), Map.of(), Set.of());
+        // Post recien creado: nunca puede tener respuestas todavia.
+        return toResponse(post, Set.of(), Map.of(), Map.of());
     }
 
     @Transactional
@@ -71,11 +71,12 @@ public class PostService {
 
         post = postRepository.save(post);
 
-        // Editar no reinicia el apoyo que ya tenia el post: lo consultamos real.
-        long supportCount = postSupportRepository.countByPostId(postId);
-        boolean supported = postSupportRepository.existsByPostIdAndUserId(postId, principal.getId());
+        // Editar no reinicia las respuestas que ya tenia el post: las
+        // consultamos reales, mismo criterio que antes con supportCount.
+        Map<UUID, PostResponseCountProjection> counts = countsByPostId(List.of(postId));
+        Map<UUID, String> currentUserTypes = currentUserTypesByPostId(principal.getId(), List.of(postId));
 
-        return toResponse(post, Set.of(), Map.of(postId, supportCount), supported ? Set.of(postId) : Set.of());
+        return toResponse(post, Set.of(), counts, currentUserTypes);
     }
 
     @Transactional
@@ -154,16 +155,16 @@ public class PostService {
         boolean isFollower = isOwner
                 || followRepository.existsByFollowerIdAndFollowingId(principal.getId(), authorId);
 
-        long supportCount = postSupportRepository.countByPostId(postId);
-        boolean supported = postSupportRepository.existsByPostIdAndUserId(postId, principal.getId());
+        Map<UUID, PostResponseCountProjection> counts = countsByPostId(List.of(postId));
+        Map<UUID, String> currentUserTypes = currentUserTypesByPostId(principal.getId(), List.of(postId));
 
         return toResponse(post,
                 isFollower ? Set.of(authorId) : Set.of(),
-                Map.of(postId, supportCount),
-                supported ? Set.of(postId) : Set.of());
+                counts,
+                currentUserTypes);
     }
 
-    // Version para getFeed: calcula "seguido" por autor real, ademas del apoyo.
+    // Version para getFeed: calcula "seguido" por autor real, ademas de las respuestas.
     private Page<PostResponse> enrichAndMap(UserPrincipal principal, Page<Post> postsPage) {
         List<UUID> authorIdsInPage = postsPage.getContent().stream()
                 .map(post -> post.getAuthor().getId())
@@ -179,24 +180,35 @@ public class PostService {
 
     // Version compartida: recibe el set de "seguido" ya resuelto (getUserPosts
     // lo calcula distinto, ya que todos los posts son del mismo autor) y
-    // resuelve el apoyo en batch para toda la pagina.
+    // resuelve las respuestas en batch para toda la pagina -- 2 queries para
+    // toda la pagina (conteos agregados + mi propio tipo por post), nunca una
+    // consulta por post (ver PostResponseRepository).
     private Page<PostResponse> enrichAndMap(UserPrincipal principal, Page<Post> postsPage, Set<UUID> followedAuthorIds) {
         List<UUID> postIds = postsPage.getContent().stream().map(Post::getId).toList();
 
-        Map<UUID, Long> supportCounts = postIds.isEmpty()
+        Map<UUID, PostResponseCountProjection> counts = countsByPostId(postIds);
+        Map<UUID, String> currentUserTypes = currentUserTypesByPostId(principal.getId(), postIds);
+
+        return postsPage.map(post -> toResponse(post, followedAuthorIds, counts, currentUserTypes));
+    }
+
+    private Map<UUID, PostResponseCountProjection> countsByPostId(List<UUID> postIds) {
+        return postIds.isEmpty()
                 ? Map.of()
-                : postSupportRepository.countGroupedByPostIds(postIds).stream()
-                .collect(Collectors.toMap(PostSupportCountProjection::getPostId, PostSupportCountProjection::getSupportCount));
+                : postResponseRepository.countGroupedByPostIds(postIds).stream()
+                .collect(Collectors.toMap(PostResponseCountProjection::getPostId, c -> c));
+    }
 
-        Set<UUID> supportedPostIds = postIds.isEmpty()
-                ? Set.of()
-                : Set.copyOf(postSupportRepository.findSupportedPostIds(principal.getId(), postIds));
-
-        return postsPage.map(post -> toResponse(post, followedAuthorIds, supportCounts, supportedPostIds));
+    private Map<UUID, String> currentUserTypesByPostId(UUID currentUserId, List<UUID> postIds) {
+        return postIds.isEmpty()
+                ? Map.of()
+                : postResponseRepository.findByUserIdAndPostIds(currentUserId, postIds).stream()
+                .collect(Collectors.toMap(r -> r.getPost().getId(), r -> r.getType().name()));
     }
 
     private PostResponse toResponse(Post post, Set<UUID> followedAuthorIds,
-                                    Map<UUID, Long> supportCounts, Set<UUID> supportedPostIds) {
+                                    Map<UUID, PostResponseCountProjection> countsByPost,
+                                    Map<UUID, String> currentUserTypeByPost) {
         User author = post.getAuthor();
         UserSummary authorSummary = new UserSummary(
                 author.getId(),
@@ -204,6 +216,11 @@ public class PostService {
                 author.getDisplayName(),
                 author.getAvatarUrl()
         );
+
+        PostResponseCountProjection counts = countsByPost.get(post.getId());
+        long presenceCount = counts == null ? 0 : counts.getPresenceCount();
+        long listeningCount = counts == null ? 0 : counts.getListeningCount();
+        String currentUserResponseType = currentUserTypeByPost.get(post.getId());
 
         return new PostResponse(
                 post.getId(),
@@ -213,8 +230,11 @@ public class PostService {
                 post.getCreatedAt(),
                 post.getUpdatedAt(),
                 followedAuthorIds.contains(author.getId()),
-                supportCounts.getOrDefault(post.getId(), 0L),
-                supportedPostIds.contains(post.getId())
+                presenceCount + listeningCount,
+                currentUserResponseType != null,
+                presenceCount,
+                listeningCount,
+                currentUserResponseType
         );
     }
 
