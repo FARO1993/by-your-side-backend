@@ -570,9 +570,17 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
     "profileVisibility": "PUBLIC",
     "followState": "NONE",
     "blockedByCurrentUser": false,
-    "mutedByCurrentUser": false
+    "mutedByCurrentUser": false,
+    "companionPreferences": ["LISTEN", "TALK"]
   }
   ```
+  **Cambio de contrato (Backend Debt B4B.5)**: `companionPreferences` es un campo nuevo
+  (adición pura al final) — lista de `"LISTEN" | "TALK" | "DISTRACT"` en orden
+  determinista (LISTEN, TALK, DISTRACT). Sigue **exactamente** la misma regla de acceso
+  que `bio`: `null` cuando el perfil está limitado (PRIVATE sin ser dueño ni follower
+  aceptado, o bloqueado por vos) — nunca `[]` en ese caso, para no revelar si hay datos
+  reales; `[]` solo cuando el perfil es visible y no configuró ninguna. Es dato estable
+  de perfil, independiente de Need/Offering (ver § 7quater).
   **Cambio de contrato (Fase 9.3)**: `followState` es un campo nuevo (adición pura al
   final) — `"NONE" | "REQUESTED" | "FOLLOWING"`. `followedByCurrentUser` se conserva sin
   romper (sigue siendo `true` únicamente cuando hay una relación `Follow` real/efectiva
@@ -1408,6 +1416,26 @@ legacy sobre este mismo dominio (§ 7, arriba) y `ChatService` ya consulta
 `companion_offerings` (§ 8, abajo) — `companion_offerings` es la única fuente de verdad de
 disponibilidad en todo el backend desde B4B.3. `GET /api/users/{userId}/availability` (§ 2)
 es el endpoint público de disponibilidad para `CompanionOffering`, agregado en B4B.4.
+
+---
+
+## 7quater. Companion Preferences (`/api/users/me/companion-preferences`) — requiere autenticación (Backend Debt B4B.5)
+
+"Cómo suelo estar para otros": dato **estable** de perfil, sin expiración. Totalmente
+independiente de Need/Offering (nunca se infiere ni se sincroniza con ellos).
+
+### `GET /api/users/me/companion-preferences`
+- **Response 200**: `{ "types": ["LISTEN", "TALK"] }`. Siempre `200`; `types: []` (nunca
+  `null`) si no configuraste ninguna. Orden fijo: LISTEN, TALK, DISTRACT.
+
+### `PATCH /api/users/me/companion-preferences`
+Reemplaza el set **completo** (nunca add/remove incremental).
+- **Body**: `{ "types": ["LISTEN", "TALK"] }`. `types` es obligatorio (`null` o ausente →
+  `400`); `[]` es válido y borra todo. Duplicados se normalizan. Un valor de enum
+  inválido → `400`.
+- **Response 200**: mismo shape que el `GET`. Sin token → `401`.
+- Dos PATCH concurrentes del mismo usuario se serializan: el resultado es siempre uno de
+  los dos sets completos, nunca una mezcla.
 
 ---
 

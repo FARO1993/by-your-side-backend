@@ -47,6 +47,13 @@ com.byyourside.backend
 │                   estática Need→Offering) + búsqueda por tipo/compatible. Sin matching
 │                   inteligente, sin CompanionMatch, sin scoring todavía — eso queda
 │                   fuera de alcance a propósito (decisión B4A #12)
+│                   B4B.5: CompanionPreference, CompanionPreferenceType (LISTEN/TALK/
+│                   DISTRACT) — "cómo suelo estar para otros", dato ESTABLE de perfil (0-3
+│                   filas por usuario, UNIQUE(user_id,type), sin expiración), independiente
+│                   de Need/Offering. PATCH reemplaza el set completo; dos PATCH
+│                   concurrentes se serializan con SELECT ... FOR UPDATE sobre la fila de
+│                   users (UserRepository.findByIdForUpdate). Expuesto en
+│                   PublicUserProfileResponse con la misma regla de acceso que `bio`
 ├── block           UserBlock, BlockPolicy (isBlockedBetween, punto central reutilizado
 │                   por profile/post/follow/chat/notification/status/discover/
 │                   availability), BlockService (bloqueo + limpieza transaccional) — Fase 9.4

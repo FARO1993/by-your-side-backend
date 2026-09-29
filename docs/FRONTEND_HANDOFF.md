@@ -880,8 +880,8 @@ Cursor, no hallazgos confirmados de ausencia:
     mostrar nada, mismo tratamiento que cualquier otro `404` de la API.
   - **NO inferir disponibilidad** desde `Status` (`/status` es "estado de ánimo", dominio
     totalmente distinto), desde el perfil (`PublicUserProfileResponse` no tiene ningún
-    campo de disponibilidad), desde `companionPreferences` (futuro, son preferencias
-    estables, no el momento actual), ni desde `followState`/cantidad de followers.
+    campo de disponibilidad), desde `companionPreferences` (preferencias estables,
+    no el momento actual; `null` si el perfil está limitado, `[]` si es visible y vacío), ni desde `followState`/cantidad de followers.
   - **Perfil `PRIVATE`**: la disponibilidad puede ser visible (`200` + objeto) **incluso
     si el perfil completo sigue limitado** (`bio: null`, sin posts) — son dos gates
     completamente independientes a propósito. No asumas que un `404` en el perfil implica

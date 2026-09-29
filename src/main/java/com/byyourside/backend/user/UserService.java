@@ -1,6 +1,7 @@
 package com.byyourside.backend.user;
 
 import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.companion.CompanionPreferenceService;
 import com.byyourside.backend.mute.UserMuteRepository;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequestRepository;
@@ -38,6 +39,7 @@ public class UserService {
     private final ProfileAccessPolicy profileAccessPolicy;
     private final UserBlockRepository userBlockRepository;
     private final UserMuteRepository userMuteRepository;
+    private final CompanionPreferenceService companionPreferenceService;
 
     public UserResponse getCurrentUser(UserPrincipal principal) {
         User user = findByIdOrThrow(principal.getId());
@@ -150,6 +152,15 @@ public class UserService {
         // viewer ya sea un follower aceptado (Fase 9.3).
         boolean fullProfile = profileAccessPolicy.canViewFullProfile(principal.getId(), target);
 
+        // Backend Debt B4B.5: solo se consulta companion_preferences cuando
+        // el perfil completo ya es visible -- evita una query cuyo
+        // resultado se descartaria para un perfil limitado. `null` (no `[]`)
+        // en ese caso, mismo criterio que `bio` arriba -- ver
+        // PublicUserProfileResponse para el porque exacto.
+        List<String> companionPreferences = fullProfile
+                ? companionPreferenceService.findOrderedTypesForFullProfile(target.getId())
+                : null;
+
         return new PublicUserProfileResponse(
                 target.getId(),
                 target.getUsername(),
@@ -163,7 +174,8 @@ public class UserService {
                 target.getProfileVisibility().name(),
                 followState.name(),
                 blockedByCurrentUser,
-                mutedByCurrentUser
+                mutedByCurrentUser,
+                companionPreferences
         );
     }
 
