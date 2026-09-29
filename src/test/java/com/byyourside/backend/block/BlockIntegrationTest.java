@@ -2,9 +2,9 @@ package com.byyourside.backend.block;
 
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
-import com.byyourside.backend.availability.Availability;
-import com.byyourside.backend.availability.AvailabilityRepository;
-import com.byyourside.backend.availability.CompanionIntent;
+import com.byyourside.backend.companion.CompanionOffering;
+import com.byyourside.backend.companion.CompanionOfferingRepository;
+import com.byyourside.backend.companion.OfferingType;
 import com.byyourside.backend.chat.ConversationRepository;
 import com.byyourside.backend.chat.MessageRepository;
 import com.byyourside.backend.comment.CommentRepository;
@@ -100,7 +100,7 @@ class BlockIntegrationTest {
     private StatusReactionRepository statusReactionRepository;
 
     @Autowired
-    private AvailabilityRepository availabilityRepository;
+    private CompanionOfferingRepository companionOfferingRepository;
 
     @Autowired
     private ConversationRepository conversationRepository;
@@ -137,7 +137,7 @@ class BlockIntegrationTest {
         notificationRepository.deleteAll();
         messageRepository.deleteAll();
         conversationRepository.deleteAll();
-        availabilityRepository.deleteAll();
+        companionOfferingRepository.deleteAll();
         statusReactionRepository.deleteAll();
         statusRepository.deleteAll();
         commentRepository.deleteAll();
@@ -596,8 +596,8 @@ class BlockIntegrationTest {
 
     @Test
     void companionInitiatedChat_respectsBlock() throws Exception { // AI
-        availabilityRepository.save(Availability.builder()
-                .user(soumia).intent(CompanionIntent.TALK)
+        companionOfferingRepository.save(CompanionOffering.builder()
+                .user(soumia).type(OfferingType.TALK)
                 .expiresAt(Instant.now().plus(6, ChronoUnit.HOURS)).build());
         block(facuToken, soumia.getId());
 
@@ -612,8 +612,8 @@ class BlockIntegrationTest {
 
     @Test
     void availabilityListing_excludesBlockedUser_blockerSide() throws Exception { // AJ
-        availabilityRepository.save(Availability.builder()
-                .user(soumia).intent(CompanionIntent.TALK)
+        companionOfferingRepository.save(CompanionOffering.builder()
+                .user(soumia).type(OfferingType.TALK)
                 .expiresAt(Instant.now().plus(6, ChronoUnit.HOURS)).build());
         block(facuToken, soumia.getId());
 
@@ -625,8 +625,8 @@ class BlockIntegrationTest {
 
     @Test
     void availabilityListing_excludesBlockedUser_blockedSide() throws Exception { // AK
-        availabilityRepository.save(Availability.builder()
-                .user(facu).intent(CompanionIntent.TALK)
+        companionOfferingRepository.save(CompanionOffering.builder()
+                .user(facu).type(OfferingType.TALK)
                 .expiresAt(Instant.now().plus(6, ChronoUnit.HOURS)).build());
         block(soumiaToken, facu.getId());
 

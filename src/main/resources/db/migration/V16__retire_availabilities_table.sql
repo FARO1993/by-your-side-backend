@@ -1,0 +1,22 @@
+-- Backend Debt B4B.3: retira la tabla legacy `availabilities` --
+-- companion_offerings pasa a ser la UNICA source of truth global para
+-- disponibilidad de Companion. Verificado antes de este DROP (auditoria
+-- previa, grep global del codigo y de todas las migraciones): sin FK
+-- entrantes de ninguna otra tabla hacia `availabilities`, sin views, sin
+-- triggers, sin ninguna otra dependencia.
+--
+-- Sin backfill, sin conversion de filas activas -- perdida deliberada y
+-- aceptada (decision B4A #6): Availability es efimera (vence a las 6hs),
+-- sin valor de producto en persistir un dato que de cualquier forma iba a
+-- expirar en unas horas, y el mapping CompanionIntent -> OfferingType es
+-- lossy (6 valores -> 3), asi que convertir filas viejas tampoco
+-- preservaria el dato original.
+--
+-- Orden de deploy seguro: el codigo desplegado junto con esta migracion ya
+-- no tiene ninguna entidad ni repositorio que apunte a esta tabla
+-- (Availability entity y AvailabilityRepository eliminados en el mismo
+-- commit/PR) -- Flyway corre esta migracion antes de que Hibernate valide
+-- el esquema (ddl-auto: validate), y como la entidad Availability ya no
+-- existe en el classpath, no hay nada que Hibernate pueda intentar
+-- mapear contra una tabla que dejo de existir.
+DROP TABLE availabilities;
