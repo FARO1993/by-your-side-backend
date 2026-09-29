@@ -687,23 +687,54 @@ class NotificationControllerIntegrationTest {
         Notification n2 = notificationRepository.save(Notification.builder()
                 .recipient(facu).actor(third).type(NotificationType.NEW_FOLLOWER).build());
 
+        // Fix de flaky: java.util.UUID.compareTo() NO equivale al ORDER BY
+        // ... DESC que Postgres aplica sobre una columna `uuid` -- Java
+        // compara mostSigBits/leastSigBits como long CON SIGNO, mientras
+        // Postgres compara los 16 bytes del UUID SIN signo. Con
+        // UUID.randomUUID() (lo que generaba el id real antes de este fix),
+        // ambos ordenes discrepan cada vez que el primer byte que difiere
+        // tiene el bit alto seteado en uno de los dos UUID -- ~50% de las
+        // corridas, el test fallaba de forma no determinista.
+        //
+        // Solucion: reasignar el id de las dos filas via JDBC directo
+        // (mismo patron ya usado abajo para createdAt, que tambien evita la
+        // gestion de @GeneratedValue de Hibernate) a un par de UUID
+        // CONSTRUIDOS a mano que comparten mostSigBits y solo difieren en
+        // el byte MENOS significativo de leastSigBits. En ese caso puntual
+        // -- un unico byte de diferencia, sin cruzar el bit de signo de
+        // ningun long -- comparar como long con signo (Java) y comparar
+        // bytes sin signo (Postgres) dan EXACTAMENTE el mismo resultado:
+        // el orden esperado deja de depender de que UUID.randomUUID()
+        // "tenga suerte", sin reimplementar el algoritmo de comparacion de
+        // Postgres ni consultar el orden esperado a la DB (evita un test
+        // tautologico).
+        UUID base = UUID.randomUUID();
+        long fixedMostSigBits = base.getMostSignificantBits();
+        long leastSigBitsPrefix = base.getLeastSignificantBits() & ~0xFFL;
+        UUID smallerId = new UUID(fixedMostSigBits, leastSigBitsPrefix | 0x01L);
+        UUID largerId = new UUID(fixedMostSigBits, leastSigBitsPrefix | 0x02L);
+
         // @PrePersist siempre pisa createdAt con Instant.now() al guardar --
         // para forzar un empate REAL (no solo "muy cercano"), se iguala el
         // timestamp via JDBC directo despues del insert (evita tanto
         // @Column(updatable = false) de la entidad como la necesidad de una
         // transaccion JPA activa en el test).
         java.sql.Timestamp ts = java.sql.Timestamp.from(Instant.now());
-        jdbcTemplate.update("UPDATE notifications SET created_at = ? WHERE id IN (?, ?)",
-                ts, n1.getId(), n2.getId());
+        jdbcTemplate.update("UPDATE notifications SET id = ?, created_at = ? WHERE id = ?",
+                smallerId, ts, n1.getId());
+        jdbcTemplate.update("UPDATE notifications SET id = ?, created_at = ? WHERE id = ?",
+                largerId, ts, n2.getId());
 
         List<UUID> firstCall = notificationIds(facuToken);
         List<UUID> secondCall = notificationIds(facuToken);
         assertThat(firstCall).isEqualTo(secondCall);
-        assertThat(firstCall).containsExactlyInAnyOrder(n1.getId(), n2.getId());
+        assertThat(firstCall).containsExactlyInAnyOrder(smallerId, largerId);
         // Con createdAt empatado, el desempate por id DESC define un orden
-        // determinista (mayor UUID primero) -- misma order en ambas llamadas.
-        UUID expectedFirst = n1.getId().compareTo(n2.getId()) > 0 ? n1.getId() : n2.getId();
-        assertThat(firstCall.get(0)).isEqualTo(expectedFirst);
+        // determinista -- largerId siempre primero, tanto para Postgres
+        // (bytes sin signo) como para la construccion de arriba (unico
+        // byte que difiere, sin cruzar el bit de signo) -- misma order en
+        // ambas llamadas, sin depender del azar de UUID.randomUUID().
+        assertThat(firstCall.get(0)).isEqualTo(largerId);
     }
 
     @Test
