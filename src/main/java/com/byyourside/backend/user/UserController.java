@@ -3,7 +3,10 @@ package com.byyourside.backend.user;
 import com.byyourside.backend.block.BlockService;
 import com.byyourside.backend.block.dto.BlockedUserResponse;
 import com.byyourside.backend.companion.CompanionOfferingService;
+import com.byyourside.backend.companion.CompanionPreferenceService;
 import com.byyourside.backend.companion.dto.CompanionAvailabilityResponse;
+import com.byyourside.backend.companion.dto.CompanionPreferencesResponse;
+import com.byyourside.backend.companion.dto.SetCompanionPreferencesRequest;
 import com.byyourside.backend.mute.MuteService;
 import com.byyourside.backend.mute.dto.MutedUserResponse;
 import com.byyourside.backend.post.PostService;
@@ -39,6 +42,7 @@ public class UserController {
     private final MuteService muteService;
     private final StatusService statusService;
     private final CompanionOfferingService companionOfferingService;
+    private final CompanionPreferenceService companionPreferenceService;
 
     @GetMapping("/me")
     public ResponseEntity<UserResponse> getCurrentUser(@AuthenticationPrincipal UserPrincipal principal) {
@@ -152,5 +156,26 @@ public class UserController {
                                                                   @RequestParam(defaultValue = "20") int size) {
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(muteService.getMutedUsers(principal.getId(), pageable));
+    }
+
+    // Backend Debt B4B.5: "como suelo estar para otros" -- dato ESTABLE de
+    // perfil, sin relacion con Need/Offering (nunca se infiere de ellos, ni
+    // los sincroniza). Siempre 200: lista vacia (nunca null) cuando el
+    // usuario no configuro ninguna preference -- a diferencia de como
+    // viaja este mismo dato embebido en PublicUserProfileResponse (ahi SI
+    // puede ser null, ver ese DTO), porque aca no hay ninguna regla de
+    // privacidad que "ocultar" -- es siempre el propio usuario consultando
+    // lo suyo.
+    @GetMapping("/me/companion-preferences")
+    public ResponseEntity<CompanionPreferencesResponse> getMyCompanionPreferences(@AuthenticationPrincipal UserPrincipal principal) {
+        return ResponseEntity.ok(companionPreferenceService.getMine(principal));
+    }
+
+    // PATCH reemplaza el set COMPLETO -- nunca add/remove incremental.
+    // `types: []` es valido y borra todas las preferences existentes.
+    @PatchMapping("/me/companion-preferences")
+    public ResponseEntity<CompanionPreferencesResponse> updateMyCompanionPreferences(@AuthenticationPrincipal UserPrincipal principal,
+                                                                                      @Valid @RequestBody SetCompanionPreferencesRequest request) {
+        return ResponseEntity.ok(companionPreferenceService.replacePreferences(principal, request.types()));
     }
 }

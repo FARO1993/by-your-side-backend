@@ -1,6 +1,7 @@
 package com.byyourside.backend.user.dto;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 // A diferencia de UserResponse (que se usa solo en /me), este DTO nunca
@@ -36,6 +37,17 @@ import java.util.UUID;
 // unilateral e invisible por diseño, NUNCA existe un campo equivalente para
 // el sentido contrario ("este usuario me muteo a mi") en ninguna respuesta
 // de la API.
+//
+// `companionPreferences` (Backend Debt B4B.5): "como suele estar esta
+// persona para otros" -- dato ESTABLE de perfil, sigue EXACTAMENTE la misma
+// regla de acceso que `bio` (mismo `fullProfile`, ver UserService): `null`
+// cuando el perfil esta limitado (PRIVATE + NONE/REQUESTED, sin ser el
+// propio owner) -- nunca `[]` en ese caso, para no filtrar si la persona
+// tiene o no preferences reales (ausencia de ACCESO, no ausencia de dato).
+// Lista vacia real (`[]`) solo cuando el perfil SI es visible y el usuario
+// genuinamente no configuro ninguna preference. NUNCA inferido de un
+// Offering/Need activos -- son tres conceptos independientes que no se
+// sincronizan entre si.
 public record PublicUserProfileResponse(
         UUID id,
         String username,
@@ -49,6 +61,7 @@ public record PublicUserProfileResponse(
         String profileVisibility,
         String followState,
         boolean blockedByCurrentUser,
-        boolean mutedByCurrentUser
+        boolean mutedByCurrentUser,
+        List<String> companionPreferences
 ) {
 }
