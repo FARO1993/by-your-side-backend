@@ -1,5 +1,7 @@
 package com.byyourside.backend.companion;
 
+import com.byyourside.backend.block.BlockPolicy;
+import com.byyourside.backend.companion.dto.CompanionAvailabilityResponse;
 import com.byyourside.backend.companion.dto.CompanionCandidateResponse;
 import com.byyourside.backend.companion.dto.CompanionOfferingResponse;
 import com.byyourside.backend.security.UserPrincipal;
@@ -34,6 +36,7 @@ public class CompanionOfferingService {
     private final CompanionOfferingWriter companionOfferingWriter;
     private final CompanionNeedRepository companionNeedRepository;
     private final UserRepository userRepository;
+    private final BlockPolicy blockPolicy;
 
     // Solo un Offering activo por vez: reemplaza cualquier declaracion
     // anterior -- mismo criterio que CompanionNeedService, exclusividad
@@ -123,6 +126,36 @@ public class CompanionOfferingService {
                 .map(need -> CompanionCompatibility.compatibleOfferingFor(need.getType()))
                 .map(compatibleType -> searchByType(principal, compatibleType))
                 .orElse(List.of());
+    }
+
+    // Backend Debt B4B.4: disponibilidad publica minima de un usuario --
+    // "esta disponible ahora, y de que forma" (decision B4A #3, reafirmada
+    // para este endpoint). Deliberadamente NO usa ProfileAccessPolicy ni
+    // consulta FollowRepository -- perfil PRIVATE, FollowState REQUESTED o
+    // NONE no importan aca: el Offering activo YA ES el consentimiento
+    // especifico de Companion, no equivale a un accepted follower y nunca
+    // desbloquea perfil/bio/posts/status. La UNICA regla que corta el
+    // acceso es el bloqueo bilateral -- mismo criterio que el resto de la
+    // API, 404 generico que nunca revela si el motivo fue "no existe" o
+    // "hay un bloqueo" (tampoco cual de los dos bloqueo a cual). Mute es
+    // unilateral y NUNCA es control de acceso aca -- si el viewer muteo al
+    // target, igual puede consultar esta ruta directa con normalidad; el
+    // mute solo excluye de superficies agregadas (searchByType/
+    // searchCompatibleWithMyNeed), nunca de un lookup directo por userId.
+    // Ausencia de Offering activa (o expirada) = null, nunca 404 -- misma
+    // convencion que getMine.
+    public CompanionAvailabilityResponse getPublicAvailability(UserPrincipal principal, UUID targetUserId) {
+        User target = userRepository.findById(targetUserId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+
+        if (blockPolicy.isBlockedBetween(principal.getId(), target.getId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+        }
+
+        return companionOfferingRepository
+                .findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc(targetUserId, Instant.now())
+                .map(offering -> new CompanionAvailabilityResponse(true, offering.getType().name(), offering.getExpiresAt()))
+                .orElse(null);
     }
 
     private CompanionOfferingResponse toResponse(CompanionOffering offering) {

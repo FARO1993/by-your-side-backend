@@ -966,7 +966,7 @@ ahora", 2hs, nunca expuesto públicamente. Ver `API_CONTRACT.md` § 7bis para el
   real de Testcontainers) — verifica que ambas responden `200`, que nunca quedan dos
   filas, y que el Need final queda en un estado válido y consultable.
 
-## Companion Offering / Availability Adapter (Backend Debt B4B.2 / B4B.3)
+## Companion Offering / Availability Adapter / Public Availability (Backend Debt B4B.2 / B4B.3 / B4B.4)
 
 Segundo y tercer PR del rediseño del dominio Companion (ver diseño B4A) — "cómo puedo
 acompañar ahora", 6hs. Ver `API_CONTRACT.md` § 7 (legacy adapter) y § 7ter (contrato
@@ -1100,6 +1100,48 @@ criterio de eficiencia `EXISTS` que la query legacy). Reglas preservadas exactam
   de disponibilidad solo se evalúa para **crear/obtener** la conversación, no para leer
   mensajes de una ya existente (sin cambios respecto al comportamiento legacy).
 
+### Public Availability (Backend Debt B4B.4)
+
+`GET /api/users/{userId}/availability` — "¿está disponible ahora, y de qué forma?". Ver
+`API_CONTRACT.md` § 2 para el contrato completo.
+
+- **Vive en `UserController`, no en un controller de `companion`**: mismo motivo ya
+  documentado arriba para `/status` — el path está bajo el prefijo de Users, Spring no
+  soporta una ruta absoluta que escape del prefijo de clase de otro controller. La lógica
+  real vive en `CompanionOfferingService.getPublicAvailability(principal, targetUserId)`,
+  el controller solo enruta.
+- **Reusa `findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc`** (la misma query que
+  `getMine`) — una única lookup indexada (`UNIQUE(user_id)`, ver V15), sin N+1, sin crear
+  ninguna query nueva. No se accede a `offering.getUser()` en ningún momento — el DTO
+  público (`CompanionAvailabilityResponse`) no necesita `UserSummary` (el caller ya conoce
+  el `userId` del path), así que tampoco dispara el lazy-load de `User`.
+- **Gate deliberadamente DISTINTO del de `/status` — NO reutiliza `ProfileAccessPolicy`,
+  NO consulta `FollowRepository`** (decisión B4A #3, reafirmada explícitamente para este
+  endpoint): `CompanionOfferingService.getPublicAvailability` solo hace (1)
+  `userRepository.findById` (404 si no existe) y (2) `blockPolicy.isBlockedBetween` (404
+  si hay bloqueo en cualquier dirección) — nada más corta el acceso. Perfil `PRIVATE` con
+  `FollowState` `NONE`/`REQUESTED`/`FOLLOWING` se comportan exactamente igual que
+  `PUBLIC` en este endpoint puntual: el Offering activo ya es el consentimiento específico
+  para esta superficie mínima, nunca equivale a un accepted follower y nunca desbloquea
+  bio/posts/status/perfil completo (`PublicUserProfileResponse` no se toca, sigue
+  aplicando sus reglas normales sin excepción).
+- **Mute — sin efecto en el lookup directo, a propósito**: mismo criterio que `/status`
+  (acceso puntual por `userId`, no superficie agregada). Mute sigue filtrando
+  `GET /api/companion/offering`/`/compatible` del viewer (búsqueda agregada) — verificado
+  con test de regresión explícito (`PublicAvailabilityIntegrationTest.
+  whenViewerMutedTarget_targetStillExcludedFromAggregatedSearch`) que confirma que ambos
+  caminos (lookup directo vs. búsqueda agregada) tienen reglas de mute distintas
+  intencionalmente, no por inconsistencia.
+- **Sin migración**: no crea ninguna tabla ni columna nueva — lee `companion_offerings`
+  (existente desde V15) con la query que ya existía. `V1`-`V16` permanecen intactas; la
+  próxima migración (si la hay) es `V17`, fuera de alcance de B4B.4.
+- **`available: true` explícito, en vez de inferir disponibilidad de la sola presencia del
+  objeto**: decisión deliberada para que el contrato quede semánticamente explícito y no
+  obligue al frontend a razonar "si el body no es null, está disponible" — documentado en
+  el propio DTO. Nunca se devuelve `{ "available": false, ... }`: ausencia de Offering
+  activa sigue siendo `200` con body `null` (ausencia genuina de dato), no un objeto con
+  `available: false`.
+
 ## Persistencia
 
 - **PostgreSQL** vía Spring Data JPA / Hibernate. `ddl-auto: validate` — el esquema
@@ -1230,7 +1272,9 @@ un problema actual, pero es una limitación a tener en cuenta antes de escalar.
   B4B.3 con casos de Offering/Need/block en la autorización de chat), comment,
   `companion.CompanionNeedControllerIntegrationTest` (Backend Debt B4B.1),
   `companion.CompanionOfferingControllerIntegrationTest` + `CompanionCompatibilityTest`
-  (Backend Debt B4B.2), follow (`FollowControllerIntegrationTest`,
+  (Backend Debt B4B.2), `companion.PublicAvailabilityIntegrationTest` (Backend Debt
+  B4B.4 — `GET /api/users/{userId}/availability`, vive en `companion` mismo criterio que
+  `status.StatusControllerIntegrationTest` para `/status`), follow (`FollowControllerIntegrationTest`,
   `FollowRequestIntegrationTest`), notification, post (`PostControllerIntegrationTest`,
   `PostPrivacyIntegrationTest`), report, status, user (`UserControllerIntegrationTest`,
   `ProfilePrivacyIntegrationTest`), `block.BlockIntegrationTest` (Fase 9.4, fixtures de

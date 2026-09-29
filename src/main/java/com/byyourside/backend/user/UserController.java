@@ -2,6 +2,8 @@ package com.byyourside.backend.user;
 
 import com.byyourside.backend.block.BlockService;
 import com.byyourside.backend.block.dto.BlockedUserResponse;
+import com.byyourside.backend.companion.CompanionOfferingService;
+import com.byyourside.backend.companion.dto.CompanionAvailabilityResponse;
 import com.byyourside.backend.mute.MuteService;
 import com.byyourside.backend.mute.dto.MutedUserResponse;
 import com.byyourside.backend.post.PostService;
@@ -36,6 +38,7 @@ public class UserController {
     private final BlockService blockService;
     private final MuteService muteService;
     private final StatusService statusService;
+    private final CompanionOfferingService companionOfferingService;
 
     @GetMapping("/me")
     public ResponseEntity<UserResponse> getCurrentUser(@AuthenticationPrincipal UserPrincipal principal) {
@@ -74,6 +77,19 @@ public class UserController {
     public ResponseEntity<StatusResponse> getCurrentStatus(@AuthenticationPrincipal UserPrincipal principal,
                                                             @PathVariable UUID userId) {
         return ResponseEntity.ok(statusService.getCurrentStatus(principal, userId));
+    }
+
+    // Backend Debt B4B.4: disponibilidad publica minima -- a diferencia de
+    // /status (arriba), deliberadamente NO usa ProfileAccessPolicy: perfil
+    // PRIVATE sin accepted follower no bloquea esta ruta, el Offering
+    // activo es un consentimiento especifico de Companion (decision B4A
+    // #3). Unica regla de corte fuerte: bloqueo bilateral (404 generico,
+    // mismo criterio que el resto de la API). 200 con body null si no hay
+    // Offering activa. Ver CompanionOfferingService.getPublicAvailability.
+    @GetMapping("/{userId}/availability")
+    public ResponseEntity<CompanionAvailabilityResponse> getPublicAvailability(@AuthenticationPrincipal UserPrincipal principal,
+                                                                                @PathVariable UUID userId) {
+        return ResponseEntity.ok(companionOfferingService.getPublicAvailability(principal, userId));
     }
 
     @GetMapping("/discover")

@@ -695,6 +695,7 @@ Resumen de superficie por dominio:
 | Availability | `/api/availability` | "modo compañía" efímero (6h) — **legacy/deprecated** (Backend Debt B4B.3: adapter delgado sobre Companion Offering, mapping lossy). NO desarrollar pantallas nuevas contra este endpoint |
 | Companion Need | `/api/companion/need` | "necesito compañía ahora" efímero (2h) — Backend Debt B4B.1. Nunca público, solo `/mine` |
 | Companion Offering | `/api/companion/offering` | "cómo puedo acompañar ahora" efímero (6h) — Backend Debt B4B.2/B4B.3. CRUD + búsqueda por tipo + `/compatible`. **Fuente de verdad real** — `/api/availability` es solo un espejo legacy de esto |
+| Public Availability | `/api/users/{userId}/availability` | Backend Debt B4B.4 — disponibilidad puntual de un usuario para tarjeta/perfil. `ProfileVisibility`/`FollowState` NO gatean; solo bloqueo bilateral corta el acceso (404) |
 | Chat | `/api/conversations` | conversaciones 1:1, mensajes paginados |
 | Notifications | `/api/notifications` | in-app, generadas internamente, mark-one (`/{id}/read`) + read-all + unread-count |
 | Reports | `/api/reports` | crear (cualquiera), resolver (moderador/admin) |
@@ -868,6 +869,24 @@ Cursor, no hallazgos confirmados de ausencia:
     no tiene ninguna Offering.
   - `CompanionNeed` sigue sin frontend propio más allá de declarar el Need (paso 1) — no
     hay pantalla de "ver mi Need" separada de la de declararlo.
+- **Public Availability — para tarjeta/perfil** (Backend Debt B4B.4): cuando quieras
+  mostrar "¿esta persona está disponible ahora?" en una tarjeta de usuario o en su perfil,
+  usá `GET /api/users/{userId}/availability`. Interpretación de la respuesta:
+  - `200` + objeto → disponible ahora. Campos: `available` (siempre `true` cuando el
+    objeto existe), `offeringType` (`"LISTEN" | "TALK" | "DISTRACT"`, singular — a lo sumo
+    una Offering activa por usuario), `expiresAt`.
+  - `200` + body `null` → no disponible ahora mismo (ausencia genuina de dato, no error).
+  - `404` → recurso inaccesible (no existe, o hay un bloqueo en cualquier dirección) — no
+    mostrar nada, mismo tratamiento que cualquier otro `404` de la API.
+  - **NO inferir disponibilidad** desde `Status` (`/status` es "estado de ánimo", dominio
+    totalmente distinto), desde el perfil (`PublicUserProfileResponse` no tiene ningún
+    campo de disponibilidad), desde `companionPreferences` (futuro, son preferencias
+    estables, no el momento actual), ni desde `followState`/cantidad de followers.
+  - **Perfil `PRIVATE`**: la disponibilidad puede ser visible (`200` + objeto) **incluso
+    si el perfil completo sigue limitado** (`bio: null`, sin posts) — son dos gates
+    completamente independientes a propósito. No asumas que un `404` en el perfil implica
+    `404` en disponibilidad, ni viceversa (aunque en la práctica ambos suelen coincidir
+    salvo por esta excepción deliberada).
 - **Reacciones a estados de ánimo** (`POST/DELETE /api/statuses/{id}/react`, 4 tipos:
   `WITH_YOU`, `WANT_TO_TALK`, `HERE_READING`, `NOT_ALONE` — enum `StatusReactionType`) —
   es una interacción social **distinta** de las respuestas a un post (`PostResponseType`,

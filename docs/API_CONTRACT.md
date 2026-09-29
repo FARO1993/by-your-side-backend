@@ -694,6 +694,48 @@ definición de "actual" para esta ruta.
   perfil — funcionan con reglas de acceso distintas a propósito (ver arriba) y no deben
   fusionarse.
 
+### `GET /api/users/{userId}/availability` (Backend Debt B4B.4)
+Disponibilidad de Companion **actual** de `userId` — "¿está disponible ahora para
+acompañar a alguien, y de qué forma?". Lee directamente `CompanionOffering` (el dominio
+nuevo, § 7ter) — nunca la tabla legacy `availabilities` (retirada en B4B.3).
+- **Path params**: `userId` (UUID).
+- **Response 200** (`CompanionAvailabilityResponse`), o **body vacío** si `userId` no tiene
+  una Offering activa ahora mismo (ausencia genuina de dato, nunca `404` — mismo criterio
+  que `GET /api/companion/offering/mine` y `GET /api/users/{userId}/status`):
+  ```json
+  { "available": true, "offeringType": "LISTEN", "expiresAt": "..." }
+  ```
+  `offeringType` es **singular** (`"LISTEN" | "TALK" | "DISTRACT"`) — solo puede existir
+  una Offering activa por usuario (`UNIQUE(user_id)`, ver V15). `available` viaja
+  explícito a propósito (no solo inferido de que el body no sea `null`), para que el
+  frontend no tenga que inferir disponibilidad de la sola presencia del objeto. **No
+  incluye**: `UserSummary`, `id`, `createdAt`, email, `Need`, ni ningún dato de perfil.
+- **Acceso — DELIBERADAMENTE DISTINTO del gate de `/status` (arriba). No reutiliza
+  `ProfileAccessPolicy`** (decisión B4A #3, reafirmada para este endpoint): activar una
+  Offering es un consentimiento **específico y temporal** para exponer esta disponibilidad
+  mínima en superficies de Companion — no equivale a un accepted follower, nunca
+  desbloquea bio/posts/status/perfil completo.
+  - Perfil `PUBLIC`, `PRIVATE` + `FOLLOWING`, `PRIVATE` + `REQUESTED`, `PRIVATE` + `NONE`:
+    en los cuatro casos, si no hay bloqueo, la disponibilidad es consultable igual —
+    `ProfileVisibility`/`FollowState` **no participan** de esta decisión en absoluto.
+  - **Bloqueo (única regla que corta el acceso)**: si existe un bloqueo entre viewer y
+    `userId` en **cualquier dirección**, `404 Not Found` genérico — igual que el resto de
+    la API, nunca revela si el motivo fue "no existe" o "hay un bloqueo", ni cuál de los
+    dos bloqueó a cuál.
+  - **Mute — SIN efecto acá, a propósito**: silenciar a `userId` no impide consultar su
+    disponibilidad directamente (acceso puntual por `userId`, no una superficie agregada).
+    Mute sigue excluyendo a `userId` de `GET /api/companion/offering`/`/compatible` del
+    viewer (§ 7ter) — ese es el único lugar donde mute filtra algo.
+  - El propio usuario puede consultar su disponibilidad por esta misma ruta sin
+    tratamiento especial (`blockPolicy.isBlockedBetween` ya devuelve `false` para
+    `userId == viewerId`).
+- **Errores**: `401` sin autenticación. `404 Not Found` — `userId` no existe, o bloqueo en
+  cualquier dirección (indistinguibles).
+- **No confundir con `GET /api/users/{userId}/status`**: `/status` sí reutiliza
+  `ProfileAccessPolicy.canViewFullProfile` (perfil `PRIVATE` sin accepted follower → no
+  visible). `/availability` deliberadamente **no** — son dos gates distintos a propósito,
+  no una inconsistencia a "unificar".
+
 ### `GET /api/users/discover`
 Lista de usuarios que el autenticado **no sigue todavía** (para descubrir gente nueva).
 No hay filtro de búsqueda por texto — es un listado paginado sin criterio de relevancia
@@ -1361,12 +1403,11 @@ matriz estática (nunca matching inteligente, sin scoring):
 /api/companion/offering/compatible` → el usuario elige un candidato → `POST
 /api/conversations/{userId}` (§ 8, ya existente, sin cambios).
 
-**Actualización (Backend Debt B4B.3)**: `/api/availability/**` ya es un adapter legacy
-sobre este mismo dominio (§ 7, arriba) y `ChatService` ya consulta `companion_offerings`
-(§ 8, abajo) — `companion_offerings` es la única fuente de verdad de disponibilidad en
-todo el backend desde B4B.3. Lo único que sigue pendiente: `GET /api/users/{userId}/*`
-todavía no tiene un endpoint público de disponibilidad para `CompanionOffering` (eso es
-Backend Debt B4B.4, fuera de alcance de B4B.3).
+**Actualización (Backend Debt B4B.3/B4B.4)**: `/api/availability/**` ya es un adapter
+legacy sobre este mismo dominio (§ 7, arriba) y `ChatService` ya consulta
+`companion_offerings` (§ 8, abajo) — `companion_offerings` es la única fuente de verdad de
+disponibilidad en todo el backend desde B4B.3. `GET /api/users/{userId}/availability` (§ 2)
+es el endpoint público de disponibilidad para `CompanionOffering`, agregado en B4B.4.
 
 ---
 
