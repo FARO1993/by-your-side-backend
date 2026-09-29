@@ -15,6 +15,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -26,7 +27,7 @@ public class CompanionOfferingService {
     private static final int MAX_ATTEMPTS = 3;
 
     // MVP a proposito (Backend Debt B4B.2): sin paginacion, sin scoring --
-    // mismo limite fijo que AvailabilityService legacy.
+    // mismo limite fijo que la extinta AvailabilityService legacy.
     private static final int DEFAULT_LIMIT = 10;
 
     private final CompanionOfferingRepository companionOfferingRepository;
@@ -67,7 +68,7 @@ public class CompanionOfferingService {
     }
 
     // Ausencia genuina de dato = 200 con body null, nunca 404 -- mismo
-    // criterio que CompanionNeedService.getMine / AvailabilityService.getMine.
+    // criterio que CompanionNeedService.getMine / la extinta AvailabilityService.getMine.
     public CompanionOfferingResponse getMine(UserPrincipal principal) {
         return companionOfferingRepository
                 .findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc(principal.getId(), Instant.now())
@@ -80,11 +81,30 @@ public class CompanionOfferingService {
     // especifico para aparecer aca, ver
     // CompanionOfferingRepository.findRandomCandidatesByType.
     public List<CompanionCandidateResponse> searchByType(UserPrincipal principal, OfferingType type) {
-        return companionOfferingRepository
-                .findRandomCandidatesByType(type.name(), Instant.now(), principal.getId(), DEFAULT_LIMIT)
-                .stream()
+        return searchCandidatesRaw(principal, type).stream()
                 .map(this::toCandidateResponse)
                 .toList();
+    }
+
+    // Backend Debt B4B.3: proyeccion sin transformar -- unicamente para el
+    // adapter legacy (AvailabilityController), que necesita el id/createdAt
+    // reales de la Offering para mantener el shape historico de
+    // AvailabilityResponse. searchByType (arriba, el endpoint nuevo) sigue
+    // sin exponer esos campos en CompanionCandidateResponse -- esto no
+    // cambia el contrato del dominio nuevo (B4B.2).
+    public List<CompanionCandidateProjection> searchCandidatesRaw(UserPrincipal principal, OfferingType type) {
+        return companionOfferingRepository
+                .findRandomCandidatesByType(type.name(), Instant.now(), principal.getId(), DEFAULT_LIMIT);
+    }
+
+    // Backend Debt B4B.3: usado por ChatService para decidir si el target
+    // esta disponible para companionship -- reemplaza a la extinta
+    // AvailabilityRepository.existsByUserIdAndExpiresAtAfter. Cualquier
+    // OfferingType activo sirve para desbloquear el primer contacto --
+    // ChatService no hace matching, solo autoriza (el Need del caller nunca
+    // participa de esta decision).
+    public boolean hasActiveOffering(UUID userId) {
+        return companionOfferingRepository.existsByUserIdAndExpiresAtAfter(userId, Instant.now());
     }
 
     // Backend Debt B4B.2: "Need -> candidatos compatibles" (decision B4A

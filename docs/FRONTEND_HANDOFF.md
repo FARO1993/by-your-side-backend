@@ -692,9 +692,9 @@ Resumen de superficie por dominio:
 | Blocking | `/api/users/{userId}/block`, `/api/users/me/blocked` | bloquear/desbloquear, lista de bloqueados propios |
 | Muting | `/api/users/{userId}/mute`, `/api/users/me/muted` | silenciar/dejar de silenciar (unilateral), lista de silenciados propios |
 | Statuses | `/api/statuses` | "estado de ánimo" efímero (24h) + reacciones |
-| Availability | `/api/availability` | "modo compañía" efímero (6h) — **legacy**, ver Companion Need/Offering. NO retirar del frontend todavía |
+| Availability | `/api/availability` | "modo compañía" efímero (6h) — **legacy/deprecated** (Backend Debt B4B.3: adapter delgado sobre Companion Offering, mapping lossy). NO desarrollar pantallas nuevas contra este endpoint |
 | Companion Need | `/api/companion/need` | "necesito compañía ahora" efímero (2h) — Backend Debt B4B.1. Nunca público, solo `/mine` |
-| Companion Offering | `/api/companion/offering` | "cómo puedo acompañar ahora" efímero (6h) — Backend Debt B4B.2. CRUD + búsqueda por tipo + `/compatible` (usa tu Need activo) |
+| Companion Offering | `/api/companion/offering` | "cómo puedo acompañar ahora" efímero (6h) — Backend Debt B4B.2/B4B.3. CRUD + búsqueda por tipo + `/compatible`. **Fuente de verdad real** — `/api/availability` es solo un espejo legacy de esto |
 | Chat | `/api/conversations` | conversaciones 1:1, mensajes paginados |
 | Notifications | `/api/notifications` | in-app, generadas internamente, mark-one (`/{id}/read`) + read-all + unread-count |
 | Reports | `/api/reports` | crear (cualquiera), resolver (moderador/admin) |
@@ -828,18 +828,16 @@ tests), son candidatas fáciles a quedar sin aprovechar si el frontend no las co
 No se verificó código de frontend — son señales a chequear con el equipo/agente de
 Cursor, no hallazgos confirmados de ausencia:
 
-- **Modo compañía completo — legacy** (`/api/availability`): declarar disponibilidad,
-  listar disponibles por intent en orden aleatorio, y sobre todo la regla especial de
-  chat (`POST /api/conversations/{userId}` permite iniciar conversación con alguien
-  disponible **sin** relación de follow previa). Si el flujo de "iniciar chat" en el
-  frontend solo contempla usuarios ya seguidos/seguidores, esta vía alternativa de
-  first-contact quedaría sin UI. **Sigue siendo la única vía que efectivamente desbloquea
-  chat** — `ChatService` todavía consulta `Availability`, no `CompanionOffering` (eso es
-  Backend Debt B4B.3). **NO retirar `/api/availability` del frontend todavía.**
-- **Companion Need + Offering — nuevo dominio, ya completo a nivel API, sin integración
-  con chat todavía** (Backend Debt B4B.1 + B4B.2, ver diseño B4A): reemplaza
-  conceptualmente al modo compañía legacy, pero **NO usar para pantallas nuevas de chat**
-  hasta que exista integración real (B4B.3/B4B.4). Flujo completo:
+- **Modo compañía — `/api/availability` es LEGACY desde Backend Debt B4B.3**: sigue
+  funcionando exactamente igual a nivel de contrato (declarar disponibilidad, listar por
+  intent, desbloquear chat sin follow previo), pero es un adapter sobre Companion
+  Offering — sin backing store propio. **No desarrollar pantallas nuevas contra este
+  endpoint.** Si algo del frontend actual ya lo usa, puede seguir usándolo sin cambios
+  (mismo path, misma auth, mismo shape de response) — pero **nuevas pantallas van contra
+  `/api/companion/offering`**.
+- **Companion Need + Offering — flujo COMPLETO y coherente end-to-end desde Backend Debt
+  B4B.3** (antes, en B4B.2, el paso 4 de abajo todavía no funcionaba de punta a punta —
+  eso ya se resolvió):
   1. `PUT /api/companion/need` — "Necesito compañía" → elegís `NeedType`
      (`LISTEN_TO_ME`/`TALK`/`GET_OPINION`/`DISTRACTION`/`JUST_COMPANY`). Nunca público.
   2. `PUT /api/companion/offering` — "Estoy disponible" → elegís `OfferingType`
@@ -852,16 +850,22 @@ Cursor, no hallazgos confirmados de ausencia:
      ```
      Sin Need activo → `200` con **lista vacía** (nunca `404`).
   4. El usuario elige un candidato de la lista → `POST /api/conversations/{userId}` (el
-     mismo endpoint de siempre) — **pero ojo**: hoy ese endpoint todavía valida
-     `Availability` legacy, no `CompanionOffering` — el candidato elegido puede NO tener
-     una `Availability` legacy activa y el `POST` dar `403` igual. Este paso 4 recién
-     queda coherente end-to-end en B4B.3/B4B.4 — no construir esta pantalla como flujo de
-     producción todavía, es integración pendiente conocida.
+     mismo endpoint de siempre). **Ahora sí queda coherente**: `ChatService` valida contra
+     `CompanionOffering` (la misma tabla que respaldó la búsqueda del paso 3), así que
+     cualquier candidato devuelto por `/compatible` o por la búsqueda por tipo **siempre**
+     puede recibir el `POST` exitosamente (salvo que su Offering haya expirado justo
+     entre la búsqueda y el intento de chat, o que exista un bloqueo — casos de carrera
+     normales, no un bug de integración).
   - `GET /api/companion/offering?type=LISTEN` (búsqueda directa por tipo, sin pasar por
     Need) usa el mismo `CompanionCandidateResponse` de arriba.
   - **Perfil `PRIVATE` sin follow SÍ puede aparecer como candidato** si tiene un Offering
     activo — el Offering es consentimiento específico para esa superficie, nunca
-    equivale a un accepted follower ni desbloquea bio/posts/status/perfil completo.
+    equivale a un accepted follower ni desbloquea bio/posts/status/perfil completo. Esto
+    también aplica al `POST /api/conversations/{userId}` del paso 4: un stranger
+    `PRIVATE` con Offering activa desbloquea el chat igual.
+  - **El `Need` propio nunca autoriza el chat** — solo importa si el *target* tiene una
+    Offering activa (de cualquier tipo). Tener un Need compatible no alcanza si el target
+    no tiene ninguna Offering.
   - `CompanionNeed` sigue sin frontend propio más allá de declarar el Need (paso 1) — no
     hay pantalla de "ver mi Need" separada de la de declararlo.
 - **Reacciones a estados de ánimo** (`POST/DELETE /api/statuses/{id}/react`, 4 tipos:

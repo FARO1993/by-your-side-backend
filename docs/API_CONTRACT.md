@@ -68,9 +68,9 @@ observable) no requieren tocar esta documentación.
 | `PostVisibility` | `PUBLIC`, `FOLLOWERS_ONLY`, `PRIVATE` | Crear/editar/leer posts |
 | `PostStatus` | `VISIBLE`, `FLAGGED`, `REMOVED` | Interno. **`FLAGGED` existe en el enum pero ningún código lo asigna actualmente** (ver `FRONTEND_HANDOFF.md` § gaps). No se expone en `PostResponse`. |
 | `CommentStatus` | `VISIBLE`, `FLAGGED`, `REMOVED` | Interno, mismo caso que `PostStatus.FLAGGED` (no asignado nunca) |
-| `CompanionIntent` | `TALK`, `DISTRACTION`, `WATCH_TOGETHER`, `MUSIC`, `LAUGH`, `JUST_COMPANY` | Modo compañía legacy (`/api/availability`) |
-| `NeedType` (Backend Debt B4B.1) | `LISTEN_TO_ME`, `TALK`, `GET_OPINION`, `DISTRACTION`, `JUST_COMPANY` | "Necesito compañía" (`/api/companion/need`). Dominio independiente de `CompanionIntent`/`OfferingType` — nunca se comparan ni convierten entre sí |
-| `OfferingType` (Backend Debt B4B.2) | `LISTEN`, `TALK`, `DISTRACT` | "Cómo puedo acompañar ahora" (`/api/companion/offering`). Dominio independiente de `CompanionIntent`/`NeedType`/`CompanionPreferenceType` futuro — nunca se comparan ni convierten entre sí pese a labels similares |
+| `CompanionIntent` | `TALK`, `DISTRACTION`, `WATCH_TOGETHER`, `MUSIC`, `LAUGH`, `JUST_COMPANY` | Modo compañía **legacy** (`/api/availability`, § 7). Backend Debt B4B.3: ya NO es un enum de dominio — solo contrato legacy, traducido a/desde `OfferingType` vía `LegacyAvailabilityMapper` (mapping lossy en el sentido Offering→Intent, ver § 7) |
+| `NeedType` (Backend Debt B4B.1) | `LISTEN_TO_ME`, `TALK`, `GET_OPINION`, `DISTRACTION`, `JUST_COMPANY` | "Necesito compañía" (`/api/companion/need`). Nunca se compara ni convierte con `OfferingType`/`CompanionIntent` directamente — la única relación es la matriz de compatibilidad estática (§ 7ter) |
+| `OfferingType` (Backend Debt B4B.2) | `LISTEN`, `TALK`, `DISTRACT` | "Cómo puedo acompañar ahora" (`/api/companion/offering`). Dominio real desde B4B.2/B4B.3. Se traduce a/desde `CompanionIntent` únicamente en el adapter legacy (`LegacyAvailabilityMapper`, § 7) — nunca se compara directamente con `NeedType`/`CompanionPreferenceType` futuro |
 | `StatusMood` | `WELL`, `NEED_DISTRACTION`, `DIFFICULT_DAY`, `NEED_TO_TALK`, `HERE_FOR_SOMEONE` | Estados de ánimo |
 | `StatusReactionType` | `WITH_YOU`, `WANT_TO_TALK`, `HERE_READING`, `NOT_ALONE` | Reacciones a un estado |
 | `PostResponseType` (Backend Debt B1) | `WITH_YOU`, `NOT_ALONE`, `HUG`, `READING`, `TELL_ME_MORE`, `LISTENING` | Responder a un post (§3). Dominio independiente de `StatusReactionType` — nunca se comparan ni convierten entre sí, aunque compartan alguna etiqueta |
@@ -1153,49 +1153,106 @@ Quita tu reacción.
 
 ---
 
-## 7. Availability / "modo compañía" (`/api/availability`) — requiere autenticación
+## 7. Availability / "modo compañía" (`/api/availability`) — **LEGACY / DEPRECATED**, requiere autenticación
+
+**Backend Debt B4B.3**: desde este PR, `/api/availability/**` es un **adapter delgado**
+(`AvailabilityController`) — no tiene backing store propio. Internamente delega
+100% en `CompanionOfferingService`; el backing store real es `companion_offerings`
+(dominio nuevo, § 7ter). La tabla `availabilities` fue **retirada** (`V16`, `DROP TABLE`,
+sin backfill — pérdida deliberada y aceptada, ver decisión B4A #6). `CompanionIntent`
+sigue existiendo, pero **solo como enum de contrato legacy** — ya no es un enum de
+dominio, nunca se usa dentro de `CompanionOffering`/`CompanionOfferingService`/
+`ChatService`.
+
+**Nuevos clientes deben usar `/api/companion/offering/**` (§ 7ter)** — este contrato
+sigue disponible por compatibilidad, **sin fecha de retiro todavía**, pero no recibe
+funcionalidad nueva (sin `/compatible`, sin matriz Need→Offering).
 
 Declaración de corto plazo ("estoy disponible para acompañar ahora"), vence a las **6
-horas** (más corto que `Status`, que vence a las 24hs).
+horas** (igual que `CompanionOffering`, más corto que `Status`, que vence a las 24hs).
+
+### Mapping `CompanionIntent` ↔ `OfferingType` (`LegacyAvailabilityMapper`)
+
+Al escribir (`POST`), `CompanionIntent` → `OfferingType`:
+
+| CompanionIntent | OfferingType |
+|---|---|
+| `TALK` | `TALK` |
+| `DISTRACTION`, `WATCH_TOGETHER`, `MUSIC`, `LAUGH` | `DISTRACT` |
+| `JUST_COMPANY` | `LISTEN` |
+
+Al leer (`GET /mine`, `GET ?intent=`), `OfferingType` → `CompanionIntent` — **mapping
+deliberadamente LOSSY** (3 valores no pueden representar 6):
+
+| OfferingType | CompanionIntent |
+|---|---|
+| `TALK` | `TALK` |
+| `LISTEN` | `JUST_COMPANY` |
+| `DISTRACT` | `DISTRACTION` |
+
+**Consecuencia visible para el cliente**: si declarás `POST {"intent": "MUSIC"}` (o
+`WATCH_TOGETHER`/`LAUGH`), una lectura posterior (`GET /mine` o aparecer en un listado)
+**siempre** devuelve `"intent": "DISTRACTION"` — el matiz original (`MUSIC` vs
+`WATCH_TOGETHER` vs `LAUGH`) se pierde y no se recupera. Esto es comportamiento
+**esperado y documentado** del adapter, no un bug — el backend no guarda metadata
+adicional para "recordar" el intent original porque eso recrearía una segunda fuente de
+verdad (justo lo que esta migración elimina). Este mapping también aplica **en ambas
+direcciones de interoperabilidad**: declarar por `/api/companion/offering` (nuevo) y
+leer por `/api/availability/mine` (legacy) usa el mismo mapping OfferingType→CompanionIntent,
+y viceversa.
 
 ### `POST /api/availability`
 Reemplaza cualquier disponibilidad activa anterior tuya (solo puede haber una a la vez).
+Internamente: traduce `intent`→`OfferingType` y llama `CompanionOfferingService.setOffering`
+(misma protección de concurrencia que B4B.2 — `UNIQUE(user_id)` + `CompanionOfferingWriter`
++ reintento acotado, el adapter no reimplementa nada).
 - **Body** (`SetAvailabilityRequest`): `{ "intent": "TALK | DISTRACTION | WATCH_TOGETHER | MUSIC | LAUGH | JUST_COMPANY" }`
 - **Response 201** (`AvailabilityResponse`):
   ```json
   { "id": "uuid", "user": { /* UserSummary */ }, "intent": "TALK", "createdAt": "...", "expiresAt": "..." }
   ```
+  `id`/`createdAt` son los reales de la `CompanionOffering` subyacente.
 
 ### `DELETE /api/availability`
 Cancela tu disponibilidad activa (si tenías una). Idempotente — no falla si no tenías ninguna.
+Delega en `CompanionOfferingService.cancelOffering` — nunca toca una tabla `availabilities`
+(ya no existe).
 - **Response**: `204 No Content`.
 
 ### `GET /api/availability/mine`
-Tu disponibilidad activa actual.
+Tu disponibilidad activa actual (consulta `CompanionOfferingService.getMine`).
 - **Response 200**: `AvailabilityResponse`, **o literalmente el body `null` con status
-  200** si no tenés ninguna activa (el service devuelve `null` en vez de lanzar 404 — ver
-  `FRONTEND_HANDOFF.md` § gaps, el frontend debe manejar `response.data === null`
-  explícitamente, no asumir que siempre hay objeto).
+  200** si no tenés ninguna activa (ausencia genuina de dato, nunca `404`).
 
 ### `GET /api/availability?intent=TALK`
-Lista hasta 10 personas disponibles ahora mismo con ese `intent`, en **orden aleatorio**
-(a propósito — nunca por popularidad), excluyendo al propio usuario autenticado.
+Lista hasta 10 personas disponibles ahora mismo con ese `intent` (traducido a
+`OfferingType` y delegado en la búsqueda nueva), en **orden aleatorio** (a propósito —
+nunca por popularidad), excluyendo al propio usuario autenticado. Sin N+1 (proyección con
+`JOIN`, heredada de B4B.2 — mejora respecto al comportamiento legacy original).
 - **Query params**: `intent` (obligatorio, uno de `CompanionIntent`).
 - **Response 200**: **No pagina** — `List<AvailabilityResponse>` (máx. 10 items, límite
   fijo en el backend, no configurable desde el cliente).
-- **Bloqueo (Fase 9.4)**: excluye bilateralmente en la query nativa (`NOT EXISTS` sobre
-  bloqueos) — ni quien el autenticado bloqueó ni quien lo bloqueó a él pueden aparecer,
-  en ninguna dirección.
-- **Mute (Fase 9.5)**: excluye, además, a quien el autenticado silenció — **unilateral**
-  (`NOT EXISTS` sobre `user_mutes`, solo esa dirección). Si A silenció a B, B deja de
-  aparecer como sugerencia para A, pero A sigue apareciendo con total normalidad en el
-  listado de B. No borra la fila de `Availability` de nadie, solo la excluye de este
-  listado — si ya existe una conversación entre ambos, `POST
+- **Bloqueo**: excluye bilateralmente — ni quien el autenticado bloqueó ni quien lo
+  bloqueó a él pueden aparecer, en ninguna dirección.
+- **Mute**: excluye, además, a quien el autenticado silenció — **unilateral**. Si A
+  silenció a B, B deja de aparecer como sugerencia para A, pero A sigue apareciendo con
+  total normalidad en el listado de B. Si ya existe una conversación entre ambos, `POST
   /api/conversations/{userId}` sigue funcionando igual (ver § 8), mute nunca impide
   contactar directamente a alguien.
+- **Cambio semántico deliberado respecto al comportamiento legacy original (decisión
+  B4A #3)**: este listado **ya no filtra por `ProfileVisibility`/follow** — un perfil
+  `PRIVATE` sin accepted follower puede aparecer si tiene una Offering activa (activarla
+  es consentimiento específico para Companion). El *shape* del contrato no cambió, pero
+  el *conjunto de candidatos* puede incluir perfiles que antes de B4B.3 ya aparecían
+  igual (la legacy original tampoco filtraba por privacidad — ver auditoría B4A), así que
+  en la práctica no hay regresión de exposición: el comportamiento observable es el mismo
+  de siempre, ahora con una base de datos explícitamente distinta y documentada.
 
-**Relación con chat**: el modo compañía es la única forma de iniciar una conversación
-con alguien que no seguís ni te sigue — ver § 8 y reglas de `POST /api/conversations/{userId}`.
+**Relación con chat**: el modo compañía sigue siendo la única forma de iniciar una
+conversación con alguien que no seguís ni te sigue — ver § 8. `ChatService` ya no
+consulta `availabilities` (retirada); consulta `CompanionOfferingService.hasActiveOffering`,
+que mira `companion_offerings` (la fuente de verdad real, con o sin pasar por este
+endpoint legacy).
 
 ---
 
@@ -1304,10 +1361,12 @@ matriz estática (nunca matching inteligente, sin scoring):
 /api/companion/offering/compatible` → el usuario elige un candidato → `POST
 /api/conversations/{userId}` (§ 8, ya existente, sin cambios).
 
-**Qué NO cambia en este PR**: `/api/availability/**`, `AvailabilityController`,
-`ChatService` (sigue consultando `Availability` legacy), y `GET /api/users/{userId}/*`
-(no existe todavía un endpoint público de disponibilidad para `CompanionOffering` — eso
-es B4B.4). Nada de esto se retira ni se migra hasta B4B.3.
+**Actualización (Backend Debt B4B.3)**: `/api/availability/**` ya es un adapter legacy
+sobre este mismo dominio (§ 7, arriba) y `ChatService` ya consulta `companion_offerings`
+(§ 8, abajo) — `companion_offerings` es la única fuente de verdad de disponibilidad en
+todo el backend desde B4B.3. Lo único que sigue pendiente: `GET /api/users/{userId}/*`
+todavía no tiene un endpoint público de disponibilidad para `CompanionOffering` (eso es
+Backend Debt B4B.4, fuera de alcance de B4B.3).
 
 ---
 
@@ -1317,10 +1376,14 @@ es B4B.4). Nada de esto se retira ni se migra hasta B4B.3.
 Obtiene la conversación existente con `userId`, o la crea si no existe.
 - **Regla de autorización para crear/obtener** (no es solo "cualquiera con cualquiera"):
   permitido si `currentUser` sigue a `userId`, **o** `userId` sigue a `currentUser`, **o**
-  `userId` tiene una `Availability` activa en este momento (declaró estar disponible para
-  acompañar). Si ninguna de las tres se cumple → `403 Forbidden`. La disponibilidad nunca
-  habilita el sentido inverso (que alguien le escriba a quien está disponible sí, pero no
-  al revés sin ese consentimiento).
+  `userId` tiene una `CompanionOffering` activa en este momento (declaró estar disponible
+  para acompañar — cualquier `OfferingType`, sin distinción). Si ninguna de las tres se
+  cumple → `403 Forbidden`. La disponibilidad nunca habilita el sentido inverso (que
+  alguien le escriba a quien está disponible sí, pero no al revés sin ese consentimiento).
+  **Backend Debt B4B.3**: `ChatService` consulta `CompanionOfferingService.hasActiveOffering`
+  — `companion_offerings` es la fuente de verdad (la extinta tabla `availabilities` fue
+  retirada). El `Need` del solicitante **nunca** participa de esta decisión — este chequeo
+  es autorización de primer contacto, no matching (ver § 7bis/7ter).
 - **Bloqueo (Fase 9.4)**: si existe un bloqueo entre ambos en cualquier dirección, tanto
   la conexión por follow como la disponibilidad de compañía se anulan — se trata
   exactamente igual que "no conectados, no disponible" (mismo `403` genérico de arriba,

@@ -15,6 +15,13 @@ public interface CompanionOfferingRepository extends JpaRepository<CompanionOffe
 
     Optional<CompanionOffering> findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc(UUID userId, Instant now);
 
+    // Backend Debt B4B.3: usado por CompanionOfferingService.hasActiveOffering,
+    // consumido por ChatService para decidir el primer contacto -- mismo
+    // criterio de eficiencia que la extinta
+    // AvailabilityRepository.existsByUserIdAndExpiresAtAfter (EXISTS, no
+    // trae la fila completa).
+    boolean existsByUserIdAndExpiresAtAfter(UUID userId, Instant now);
+
     // ORDER BY RANDOM() nativo de Postgres -- mismo criterio deliberado que
     // AvailabilityRepository.findRandomAvailable: nunca ordenar por
     // popularidad en modo compañia. MVP a proposito (Backend Debt B4B.2):
@@ -31,11 +38,13 @@ public interface CompanionOfferingRepository extends JpaRepository<CompanionOffe
     // como muter_id) -- mismo patron exacto que la query legacy.
     @Query(value = """
             SELECT
+                o.id AS offeringId,
                 u.id AS userId,
                 u.username AS username,
                 u.display_name AS displayName,
                 u.avatar_url AS avatarUrl,
                 o.type AS offeringType,
+                o.created_at AS createdAt,
                 o.expires_at AS expiresAt
             FROM companion_offerings o
             JOIN users u ON u.id = o.user_id

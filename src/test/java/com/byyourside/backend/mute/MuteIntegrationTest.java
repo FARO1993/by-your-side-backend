@@ -2,9 +2,9 @@ package com.byyourside.backend.mute;
 
 import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.auth.EmailVerificationTokenRepository;
-import com.byyourside.backend.availability.Availability;
-import com.byyourside.backend.availability.AvailabilityRepository;
-import com.byyourside.backend.availability.CompanionIntent;
+import com.byyourside.backend.companion.CompanionOffering;
+import com.byyourside.backend.companion.CompanionOfferingRepository;
+import com.byyourside.backend.companion.OfferingType;
 import com.byyourside.backend.block.UserBlockRepository;
 import com.byyourside.backend.chat.ConversationRepository;
 import com.byyourside.backend.chat.MessageRepository;
@@ -103,7 +103,7 @@ class MuteIntegrationTest {
     private StatusReactionRepository statusReactionRepository;
 
     @Autowired
-    private AvailabilityRepository availabilityRepository;
+    private CompanionOfferingRepository companionOfferingRepository;
 
     @Autowired
     private ConversationRepository conversationRepository;
@@ -140,7 +140,7 @@ class MuteIntegrationTest {
         notificationRepository.deleteAll();
         messageRepository.deleteAll();
         conversationRepository.deleteAll();
-        availabilityRepository.deleteAll();
+        companionOfferingRepository.deleteAll();
         statusReactionRepository.deleteAll();
         statusRepository.deleteAll();
         commentRepository.deleteAll();
@@ -613,8 +613,8 @@ class MuteIntegrationTest {
 
     @Test
     void availabilityListing_excludesMutedUser() throws Exception { // AF
-        availabilityRepository.save(Availability.builder()
-                .user(soumia).intent(CompanionIntent.TALK)
+        companionOfferingRepository.save(CompanionOffering.builder()
+                .user(soumia).type(OfferingType.TALK)
                 .expiresAt(Instant.now().plus(6, ChronoUnit.HOURS)).build());
         mute(facuToken, soumia.getId());
 
@@ -626,8 +626,8 @@ class MuteIntegrationTest {
 
     @Test
     void mutedUser_stillSeesMuterInAvailabilityListing() throws Exception { // AG
-        availabilityRepository.save(Availability.builder()
-                .user(soumia).intent(CompanionIntent.TALK)
+        companionOfferingRepository.save(CompanionOffering.builder()
+                .user(soumia).type(OfferingType.TALK)
                 .expiresAt(Instant.now().plus(6, ChronoUnit.HOURS)).build());
 
         mute(soumiaToken, facu.getId()); // soumia (A) mutea a facu (B)
@@ -648,8 +648,8 @@ class MuteIntegrationTest {
                         .header("Authorization", "Bearer " + facuToken))
                 .andExpect(status().isOk());
 
-        availabilityRepository.save(Availability.builder()
-                .user(soumia).intent(CompanionIntent.TALK)
+        companionOfferingRepository.save(CompanionOffering.builder()
+                .user(soumia).type(OfferingType.TALK)
                 .expiresAt(Instant.now().plus(6, ChronoUnit.HOURS)).build());
         mute(facuToken, soumia.getId());
 
@@ -667,8 +667,8 @@ class MuteIntegrationTest {
 
     @Test
     void unmute_restoresAvailabilityEligibility() throws Exception { // AI
-        availabilityRepository.save(Availability.builder()
-                .user(soumia).intent(CompanionIntent.TALK)
+        companionOfferingRepository.save(CompanionOffering.builder()
+                .user(soumia).type(OfferingType.TALK)
                 .expiresAt(Instant.now().plus(6, ChronoUnit.HOURS)).build());
         mute(facuToken, soumia.getId());
 
