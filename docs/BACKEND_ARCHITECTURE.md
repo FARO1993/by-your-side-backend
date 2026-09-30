@@ -457,7 +457,8 @@ Dos capas independientes, con una regla de dominancia entre ellas.
 - **Deuda explícita (fuera de alcance)**: custom audiences/círculos como
   audiencia, privacidad de perfil por campo individual, ocultar contadores de
   seguidores, controles de privacidad de mensajería, discovery privacy avanzada (`GET
-  /api/users/discover` no filtra por `profileVisibility` ni por `followState`),
+  /api/users/discover` no filtra por `profileVisibility`; sí por `followState` en browse,
+  ver § Discover server-side),
   expiración automática de `FollowRequest`, rate limiting específico para follow
   requests, recomendaciones/anti-spam. (`block` y `mute` dejaron de estar en esta lista —
   ver "Bloqueo de usuarios (Fase 9.4)" y "Silenciar usuarios (Fase 9.5)" más abajo.)
@@ -520,10 +521,9 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   (`PostRepository`) y `findActiveStatusesForUsers` (`StatusRepository`) llevan además un
   `NOT EXISTS` sobre `UserBlock` bilateral. Documentado así a propósito: si algún día la
   limpieza de `follows` al bloquear tuviera un bug, el feed seguiría protegido igual.
-- **Discover y disponibilidad — exclusión bilateral batch**: `UserService.discoverUsers`
-  agrega los ids bloqueados-por-mí y bloqueadores-de-mí (2 consultas batch,
-  `findBlockedIdsByBlocker`/`findBlockerIdsByBlocked`) al mismo `excludedIds` que ya usa
-  para followers, antes de paginar — ninguna consulta por fila.
+- **Discover y disponibilidad — exclusión bilateral**: Discover aplica el bloqueo
+  bilateral como `NOT EXISTS` dentro de la propia query (desde B5.1, ver § Discover
+  server-side; antes eran 2 consultas batch de ids sumadas a un `excludedIds` en Java).
   `AvailabilityRepository.findRandomAvailable` (query nativa) lleva el mismo `NOT EXISTS`
   bilateral que el feed, ya que no hay forma de reusar `BlockPolicy` ahí sin volverlo
   N+1 (una consulta por candidato).
@@ -619,10 +619,10 @@ Dos capas independientes, con una regla de dominancia entre ellas.
   **no es redundante con nada**: mutear no toca `follows`, así que esta query es el único
   mecanismo que saca esos posts/estados del feed. El autor sigue siendo un follower
   efectivo en todo lo demás.
-- **Discover — exclusión unilateral batch, sin contraparte**: `UserService.discoverUsers`
-  agrega `findMutedIdsByMuter(principal.getId())` (1 consulta batch más) al mismo
-  `excludedIds` que ya arma para follows/bloqueos. A diferencia de bloqueo, **no** existe
-  un `findMuterIdsByMuted` — que alguien me haya muteado a mí no me excluye de nada.
+- **Discover — exclusión unilateral, sin contraparte**: Discover aplica el mute como un
+  `NOT EXISTS` sobre `user_mutes` con `muter_id = :me` (una sola dirección; desde B5.1
+  dentro de la query, ver § Discover server-side). A diferencia de bloqueo, **no** existe
+  el sentido inverso — que alguien me haya muteado a mí no me excluye de nada.
 - **Disponibilidad/Companion — mismo criterio unilateral en la query nativa**:
   `AvailabilityRepository.findRandomAvailable` lleva un `NOT EXISTS` adicional sobre
   `user_mutes` con `muter_id = :excludeUserId` (una sola dirección, sin el `OR` que sí
@@ -1148,6 +1148,47 @@ criterio de eficiencia `EXISTS` que la query legacy). Reglas preservadas exactam
   el propio DTO. Nunca se devuelve `{ "available": false, ... }`: ausencia de Offering
   activa sigue siendo `200` con body `null` (ausencia genuina de dato), no un objeto con
   `available: false`.
+
+### Discover server-side (Backend Debt B5.1)
+
+`GET /api/users/discover?q=&page=&size=` — búsqueda y browse de personas.
+
+- **Browse vs search**: `q` ausente/vacío/en blanco = browse (excluye a quienes ya
+  sigo, igual que siempre). `q` presente = search por `username`/`displayName`,
+  *contains* sin distinguir mayúsculas; los followed **sí** aparecen con
+  `followState = FOLLOWING`. **Nunca** se busca por email ni por bio (buscar por la bio
+  de un perfil `PRIVATE` filtraría por inferencia un dato que el DTO oculta).
+- **Todo DB-side**: `UserRepository.browseDiscoverable`/`searchDiscoverable` aplican
+  usuario actual, `status = ACTIVE`, bloqueo bilateral, mute unilateral y (solo browse)
+  followed como `NOT EXISTS` — ya no hay una lista `NOT IN` armada en Java ni se cargan
+  todos los `Follow`/bloqueos/mutes del viewer. Los filtros comparten constantes con el
+  `countQuery`, así que conteo y contenido nunca divergen.
+- **Cuentas discoverables**: solo `UserStatus.ACTIVE` (`SUSPENDED`/`DEACTIVATED` no
+  aparecen). **El `role` NO filtra**: `UserRole` (`USER`/`MODERATOR`/`ADMIN`) es
+  autorización, no identidad social — promover a alguien a MODERATOR/ADMIN no lo hace
+  desaparecer de Discover. Si algún día existen cuentas técnicas no discoverables, deben
+  modelarse explícitamente y no reutilizando `UserRole`.
+- **Orden estable**: `ORDER BY LOWER(COALESCE(displayName, username)) ASC, id ASC` dentro de
+  la query (el `Pageable` va sin `Sort`). Antes no había `ORDER BY` y la paginación podía
+  repetir/saltear usuarios. El orden lo da la collation de la base.
+- **Validación (400)**: `page < 0`, `size < 1`, `size > 50`, `q` normalizado > 50
+  caracteres; y `?size=abc`/`?page=x` (nuevo handler de `MethodArgumentTypeMismatchException`
+  en `GlobalExceptionHandler`, 400 con el formato de error existente — antes caían en el
+  catch-all como 500). Sin clamp silencioso. La validación vive en `UserService`, no con
+  `@Validated`, para que todo sea un `ResponseStatusException`.
+- **Normalización de `q`**: `trim`, colapso de espacios, minúsculas (`Locale.ROOT`) y
+  escape de `\`, `%` y `_` (con `ESCAPE '\'`), así que ninguno actúa como wildcard.
+- **`followState` en batch**: `NONE`/`REQUESTED`/`FOLLOWING` con precedencia
+  `FOLLOWING > REQUESTED > NONE` (igual que `getPublicProfile`); `REQUESTED` nunca se
+  colapsa en `NONE`. Queries por página: browse = 3 (página, count, pendientes), search = 4
+  (+ following). Antes: 7, creciendo con follows/bloqueos/mutes del viewer.
+- **`PRIVATE`**: aparece como identidad limitada (`bio: null` siempre, aun siendo follower
+  aceptado — el perfil completo se ve abriéndolo). El DTO `DiscoverUserResponse` no cambió.
+- **Sin migración**: ninguna de las queries requiere un índice nuevo a esta escala
+  (`LIKE '%x%'` no usa btree; `pg_trgm` se evaluaría con evidencia de volumen).
+- **Diferido**: `available: boolean` (availability summary, B5.2), integración frontend
+  (B5.3), status summary (B5.4, sin necesidad de producto concreta). Las preferences
+  (B4B.5) no entran en Discover.
 
 ## Persistencia
 

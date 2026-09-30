@@ -98,10 +98,12 @@ public class UserController {
 
     @GetMapping("/discover")
     public ResponseEntity<Page<DiscoverUserResponse>> discoverUsers(@AuthenticationPrincipal UserPrincipal principal,
+                                                                    @RequestParam(required = false) String q,
                                                                     @RequestParam(defaultValue = "0") int page,
                                                                     @RequestParam(defaultValue = "20") int size) {
-        Pageable pageable = PageRequest.of(page, size);
-        return ResponseEntity.ok(userService.discoverUsers(principal, pageable));
+        // Backend Debt B5.1: la validacion de page/size/q vive en el
+        // service (400), no aca -- ver UserService.discoverUsers.
+        return ResponseEntity.ok(userService.discoverUsers(principal, q, page, size));
     }
 
     @PostMapping(value = "/me/avatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

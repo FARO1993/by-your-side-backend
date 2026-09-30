@@ -15,6 +15,8 @@ import com.byyourside.backend.user.dto.UpdateProfileRequest;
 import com.byyourside.backend.user.dto.UserResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -24,9 +26,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -179,46 +181,100 @@ public class UserService {
         );
     }
 
-    public Page<DiscoverUserResponse> discoverUsers(UserPrincipal principal, Pageable pageable) {
-        Set<UUID> excludedIds = followRepository.findByFollowerId(principal.getId()).stream()
-                .map(follow -> follow.getFollowing().getId())
-                .collect(Collectors.toSet());
+    static final int DISCOVER_MAX_PAGE_SIZE = 50;
+    static final int DISCOVER_MAX_QUERY_LENGTH = 50;
 
-        // Fase 9.4: exclusion bilateral de bloqueo -- 2 consultas batch para
-        // toda la lista (a quien bloquee + quien me bloqueo a mi), no una
-        // consulta por fila de discover.
-        excludedIds.addAll(userBlockRepository.findBlockedIdsByBlocker(principal.getId()));
-        excludedIds.addAll(userBlockRepository.findBlockerIdsByBlocked(principal.getId()));
+    // Backend Debt B5.1: Discover server-side.
+    //
+    // - `q` ausente/vacio/en blanco => BROWSE: excluye a quienes ya sigo
+    //   (mismo contrato de siempre, "gente nueva").
+    // - `q` presente => SEARCH por username/displayName (contains, sin
+    //   distinguir mayusculas; nunca email ni bio): los followed SI
+    //   aparecen, con followState=FOLLOWING (buscar a alguien que ya seguis
+    //   tiene que encontrarlo).
+    // En ambos modos: solo cuentas ACTIVE, sin el propio usuario, sin
+    // block bilateral ni mute unilateral -- todo DB-side (NOT EXISTS, ver
+    // UserRepository), sin listas NOT IN globales. El role NO filtra.
+    //
+    // Validacion aca (no con @Validated) para que todo sea un
+    // ResponseStatusException 400 con el formato de error existente.
+    public Page<DiscoverUserResponse> discoverUsers(UserPrincipal principal, String q, int page, int size) {
+        if (page < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "page must be >= 0");
+        }
+        if (size < 1 || size > DISCOVER_MAX_PAGE_SIZE) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "size must be between 1 and " + DISCOVER_MAX_PAGE_SIZE);
+        }
+        String normalizedQuery = normalizeDiscoverQuery(q);
+        if (normalizedQuery != null && normalizedQuery.length() > DISCOVER_MAX_QUERY_LENGTH) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "q must be at most " + DISCOVER_MAX_QUERY_LENGTH + " characters");
+        }
 
-        // Fase 9.5: exclusion UNILATERAL de mute -- solo "a quien yo
-        // muteo" (a diferencia de block, no hay equivalente a
-        // findBlockerIdsByBlocked: que alguien me haya muteado a mi no me
-        // saca de SU discover en ningun sentido reciproco, porque yo no soy
-        // quien filtra ahi).
-        excludedIds.addAll(userMuteRepository.findMutedIdsByMuter(principal.getId()));
+        // Sin Sort: el orden total esta en la query (ver UserRepository).
+        Pageable pageable = PageRequest.of(page, size);
+        boolean searching = normalizedQuery != null;
+        Page<User> result = searching
+                ? userRepository.searchDiscoverable(principal.getId(), UserStatus.ACTIVE,
+                        toContainsPattern(normalizedQuery), pageable)
+                : userRepository.browseDiscoverable(principal.getId(), UserStatus.ACTIVE, pageable);
 
-        excludedIds.add(principal.getId());
+        List<UUID> idsInPage = result.getContent().stream().map(User::getId).toList();
+        if (idsInPage.isEmpty()) {
+            return new PageImpl<>(List.of(), pageable, result.getTotalElements());
+        }
 
-        Page<User> page = userRepository.findByIdNotIn(excludedIds, pageable);
+        // followState en batch (1 query por estado, nunca una por fila).
+        // En browse FOLLOWING es imposible por construccion (la query ya
+        // excluye followed), asi que ni se consulta. Precedencia igual que
+        // getPublicProfile: FOLLOWING > REQUESTED > NONE -- REQUESTED nunca
+        // se colapsa en NONE.
+        Set<UUID> followingIds = searching
+                ? Set.copyOf(followRepository.findFollowingIdsAmong(principal.getId(), idsInPage))
+                : Set.of();
+        Set<UUID> pendingIds = Set.copyOf(
+                followRequestRepository.findPendingOutgoingTargetIdsAmong(principal.getId(), idsInPage));
 
-        // Batch, no N+1: una sola consulta para saber que targets de ESTA
-        // pagina tienen un FollowRequest PENDING mio, en vez de una consulta
-        // por fila (discover ya excluye a quienes sigo, asi que el unico
-        // otro estado posible aca es REQUESTED).
-        List<UUID> idsInPage = page.getContent().stream().map(User::getId).toList();
-        Set<UUID> pendingTargetIds = idsInPage.isEmpty()
-                ? Set.of()
-                : Set.copyOf(followRequestRepository.findPendingOutgoingTargetIdsAmong(principal.getId(), idsInPage));
-
-        return page.map(user -> new DiscoverUserResponse(
+        return result.map(user -> new DiscoverUserResponse(
                 user.getId(),
                 user.getUsername(),
                 user.getDisplayName(),
                 user.getProfileVisibility() == ProfileVisibility.PUBLIC ? user.getBio() : null,
                 user.getAvatarUrl(),
                 user.getProfileVisibility().name(),
-                (pendingTargetIds.contains(user.getId()) ? FollowState.REQUESTED : FollowState.NONE).name()
+                resolveDiscoverFollowState(user.getId(), followingIds, pendingIds).name()
         ));
+    }
+
+    private static FollowState resolveDiscoverFollowState(UUID targetId, Set<UUID> followingIds, Set<UUID> pendingIds) {
+        if (followingIds.contains(targetId)) {
+            return FollowState.FOLLOWING;
+        }
+        if (pendingIds.contains(targetId)) {
+            return FollowState.REQUESTED;
+        }
+        return FollowState.NONE;
+    }
+
+    // trim + colapso de espacios; null si queda vacio (=> browse). La
+    // minuscula se aplica en toContainsPattern.
+    static String normalizeDiscoverQuery(String q) {
+        if (q == null) {
+            return null;
+        }
+        String normalized = q.trim().replaceAll("\\s+", " ");
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    // Escapa \ primero (si no, escaparia las barras que agrega el propio
+    // escape de % y _), despues % y _ -- asi ninguno actua como wildcard.
+    static String toContainsPattern(String normalizedQuery) {
+        String escaped = normalizedQuery.toLowerCase(Locale.ROOT)
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_");
+        return "%" + escaped + "%";
     }
 
     @Transactional
