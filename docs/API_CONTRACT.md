@@ -745,26 +745,39 @@ nuevo, § 7ter) — nunca la tabla legacy `availabilities` (retirada en B4B.3).
   no una inconsistencia a "unificar".
 
 ### `GET /api/users/discover`
-Lista de usuarios que el autenticado **no sigue todavía** (para descubrir gente nueva).
-No hay filtro de búsqueda por texto — es un listado paginado sin criterio de relevancia
-explícito más allá del orden default de la tabla. **No filtra por `profileVisibility`**
-(ocultar cuentas privadas del discover es "discovery privacy avanzada", explícitamente
-fuera de alcance de esta fase) — un usuario `PRIVATE` puede aparecer en el listado.
-- **Query params**: `page` (default `0`), `size` (default `20`).
+Browse y búsqueda de personas, paginado.
+- **Browse** (`q` ausente, vacío o en blanco): usuarios que el autenticado **no sigue
+  todavía** (para descubrir gente nueva).
+- **Search** (`q` presente, Backend Debt B5.1): busca por `displayName` y `username`,
+  *contains* sin distinguir mayúsculas (`q=fac` encuentra "Facundo"). **Nunca** busca por
+  email ni por bio. En search los usuarios que ya seguís **sí aparecen**, con
+  `followState: "FOLLOWING"`.
+- **Orden estable** (B5.1): `displayName` (o `username` si no tiene) sin distinguir
+  mayúsculas, ascendente, desempate por `id` — la paginación no repite ni saltea usuarios.
+- **Cuentas listadas**: solo `ACTIVE` (las `SUSPENDED`/`DEACTIVATED` no aparecen). El
+  `role` **no** filtra: un `MODERATOR`/`ADMIN` activo aparece igual que un `USER`.
+- **No filtra por `profileVisibility`**: un usuario `PRIVATE` aparece como identidad
+  limitada (`bio: null`, aunque ya lo sigas).
+- **Query params**: `q` (opcional, máx. 50 caracteres tras `trim` y colapsar espacios),
+  `page` (default `0`, `>= 0`), `size` (default `20`, entre `1` y `50`).
+- **Errores `400`**: `page < 0`, `size < 1`, `size > 50`, `q` normalizado > 50 caracteres,
+  y valores no numéricos (`?size=abc`, `?page=x`). No hay clamp silencioso.
 - **Response 200**: `Page<DiscoverUserResponse>`:
   ```json
   { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC", "followState": "NONE" }
   ```
   `bio` viaja en `null` cuando `profileVisibility` es `PRIVATE` — mismo criterio que
   `GET /api/users/{userId}`, para no exponer el mismo dato por una ruta lateral.
-  `followState` (Fase 9.3) es siempre `"NONE"` o `"REQUESTED"` en este listado en
-  particular — nunca `"FOLLOWING"`, porque discover ya excluye a quienes se sigue
-  efectivamente.
+  `followState` (Fase 9.3) en **browse** es siempre `"NONE"` o `"REQUESTED"` — nunca
+  `"FOLLOWING"`, porque browse excluye a quienes se sigue efectivamente. En **search**
+  (B5.1) puede ser `"NONE"`, `"REQUESTED"` o `"FOLLOWING"`; `REQUESTED` nunca se colapsa
+  en `NONE`.
   **Bloqueo (Fase 9.4)**: excluye bilateralmente a quien el autenticado bloqueó **y** a
-  quien lo bloqueó a él (2 consultas batch sobre toda la página, no una por fila) —
-  ninguna de las dos direcciones aparece nunca en este listado.
+  quien lo bloqueó a él (dentro de la propia query, B5.1) — ninguna de las dos
+  direcciones aparece nunca en este listado, ni en browse ni en search; el bloqueo
+  prevalece sobre el follow.
   **Mute (Fase 9.5)**: excluye, además, a quien el autenticado silenció — **solo esa
-  dirección** (1 consulta batch más). A diferencia del bloqueo, no hay exclusión
+  dirección** (también dentro de la query, en browse y en search). A diferencia del bloqueo, no hay exclusión
   recíproca: que alguien te haya silenciado a vos no te saca de **su** discover ni del
   de nadie más, porque mute nunca filtra desde la perspectiva del muted.
 

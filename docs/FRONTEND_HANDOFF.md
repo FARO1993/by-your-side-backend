@@ -808,8 +808,13 @@ Ver `WEBSOCKET_CONTRACT.md` para el contrato completo. Puntos clave para la inte
 - No hay cleanup periódico de `auth_sessions` — las filas rotadas/revocadas/expiradas se
   acumulan en la base sin borrarse (ver `BACKEND_ARCHITECTURE.md` § Sesiones).
 - No hay endpoint para editar el `username` (handle) una vez generado.
-- No hay búsqueda de usuarios por texto — `GET /api/users/discover` es un listado sin
-  filtro de búsqueda.
+- La búsqueda de usuarios por texto existe **solo en backend** (`GET
+  /api/users/discover?q=`, B5.1): busca por `displayName`/`username`, nunca por email ni
+  bio, con orden estable y paginación real (`size` 1–50, si no `400`). Hasta la
+  integración frontend (B5.3) el frontend sigue filtrando en el navegador solo la página
+  cargada — al adoptarla hay que enviar `q` (con debounce), quitar `filterPeople` local y
+  manejar `followState: "FOLLOWING"` en resultados de búsqueda (browse sigue sin
+  incluirlos).
 - No hay marcado de notificación individual como leída, solo "marcar todas".
 - No hay "typing indicator" ni presencia online/offline en el chat.
 - No hay soft-delete recuperable expuesto (los `REMOVED` de post/comment no tienen
