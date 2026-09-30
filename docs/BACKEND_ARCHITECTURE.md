@@ -1181,14 +1181,30 @@ criterio de eficiencia `EXISTS` que la query legacy). Reglas preservadas exactam
 - **`followState` en batch**: `NONE`/`REQUESTED`/`FOLLOWING` con precedencia
   `FOLLOWING > REQUESTED > NONE` (igual que `getPublicProfile`); `REQUESTED` nunca se
   colapsa en `NONE`. Queries por página: browse = 3 (página, count, pendientes), search = 4
-  (+ following). Antes: 7, creciendo con follows/bloqueos/mutes del viewer.
+  (+ following) — más 1 de availability desde B5.2 (4 y 5). Antes de B5.1: 7, creciendo
+  con follows/bloqueos/mutes del viewer.
 - **`PRIVATE`**: aparece como identidad limitada (`bio: null` siempre, aun siendo follower
-  aceptado — el perfil completo se ve abriéndolo). El DTO `DiscoverUserResponse` no cambió.
+  aceptado — el perfil completo se ve abriéndolo).
+- **`available` (B5.2)**: `DiscoverUserResponse.available` (boolean no nullable) sale de
+  `CompanionOfferingService.findAvailableUserIdsAmong(ids)` →
+  `CompanionOfferingRepository.findAvailableUserIdsAmong(ids, now)`: **una sola query por
+  página** sobre `companion_offerings` (source of truth; nunca la tabla legacy, Need,
+  status ni preferences), `WHERE user_id IN :ids AND expires_at > :now` — misma regla
+  temporal que `existsByUserIdAndExpiresAtAfter` y `getPublicAvailability` (las filas
+  expiradas siguen físicamente en la tabla y no cuentan). Página vacía => ni se consulta.
+  La query batch **no** repite block/mute/status/visibility: recibe ids ya autorizados por
+  la query de Discover (quien no puede aparecer, ni llega al batch). Solo devuelve ids:
+  el `OfferingType` nunca viaja en Discover. `UserService` inyecta
+  `CompanionOfferingService` (sin ciclo: este depende de repositories y `BlockPolicy`, no
+  de `UserService`). Queries por página: browse = 4 (página, count, pendientes,
+  availability); search = 5 (+ following).
 - **Sin migración**: ninguna de las queries requiere un índice nuevo a esta escala
-  (`LIKE '%x%'` no usa btree; `pg_trgm` se evaluaría con evidencia de volumen).
-- **Diferido**: `available: boolean` (availability summary, B5.2), integración frontend
-  (B5.3), status summary (B5.4, sin necesidad de producto concreta). Las preferences
-  (B4B.5) no entran en Discover.
+  (`LIKE '%x%'` no usa btree; `pg_trgm` se evaluaría con evidencia de volumen). Para
+  `available`, `UNIQUE(user_id)` de `companion_offerings` (V15) ya cubre el acceso por
+  `user_id IN (...)` (a lo sumo una fila por usuario; `expires_at` se filtra sobre esa
+  única fila).
+- **Diferido**: integración frontend (B5.3), status summary (B5.4, sin necesidad de
+  producto concreta). Las preferences (B4B.5) no entran en Discover.
 
 ## Persistencia
 

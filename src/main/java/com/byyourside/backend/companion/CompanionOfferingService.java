@@ -16,7 +16,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -108,6 +110,18 @@ public class CompanionOfferingService {
     // participa de esta decision).
     public boolean hasActiveOffering(UUID userId) {
         return companionOfferingRepository.existsByUserIdAndExpiresAtAfter(userId, Instant.now());
+    }
+
+    // Backend Debt B5.2: version batch de hasActiveOffering, usada por
+    // Discover (UserService.discoverUsers) para `available`. Una sola query
+    // por pagina. No aplica block/mute/profileVisibility: los ids ya vienen
+    // autorizados por la query de Discover. Lista vacia => ni se consulta
+    // (evita un IN () vacio y una query innecesaria).
+    public Set<UUID> findAvailableUserIdsAmong(Collection<UUID> userIds) {
+        if (userIds.isEmpty()) {
+            return Set.of();
+        }
+        return companionOfferingRepository.findAvailableUserIdsAmong(userIds, Instant.now());
     }
 
     // Backend Debt B4B.2: "Need -> candidatos compatibles" (decision B4A

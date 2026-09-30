@@ -5,8 +5,10 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 public interface CompanionOfferingRepository extends JpaRepository<CompanionOffering, UUID> {
@@ -21,6 +23,16 @@ public interface CompanionOfferingRepository extends JpaRepository<CompanionOffe
     // AvailabilityRepository.existsByUserIdAndExpiresAtAfter (EXISTS, no
     // trae la fila completa).
     boolean existsByUserIdAndExpiresAtAfter(UUID userId, Instant now);
+
+    // Backend Debt B5.2: batch para Discover ("available: boolean") -- UNA
+    // query para toda la pagina, nunca una por usuario. Mismo criterio
+    // temporal que existsByUserIdAndExpiresAtAfter y
+    // findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc (Offering activo
+    // = expiresAt estrictamente posterior a :now; una fila expirada puede
+    // seguir en la tabla y NO cuenta). SIN filtros de block/mute/visibility:
+    // recibe ids que Discover ya autorizo. Solo ids, nunca OfferingType.
+    @Query("SELECT o.user.id FROM CompanionOffering o WHERE o.user.id IN :userIds AND o.expiresAt > :now")
+    Set<UUID> findAvailableUserIdsAmong(@Param("userIds") Collection<UUID> userIds, @Param("now") Instant now);
 
     // ORDER BY RANDOM() nativo de Postgres -- mismo criterio deliberado que
     // AvailabilityRepository.findRandomAvailable: nunca ordenar por

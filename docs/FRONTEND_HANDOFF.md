@@ -815,6 +815,13 @@ Ver `WEBSOCKET_CONTRACT.md` para el contrato completo. Puntos clave para la inte
   cargada — al adoptarla hay que enviar `q` (con debounce), quitar `filterPeople` local y
   manejar `followState: "FOLLOWING"` en resultados de búsqueda (browse sigue sin
   incluirlos).
+- **Discover ahora trae `available` (B5.2)**: cada card de `GET /api/users/discover` incluye
+  `available: boolean` (siempre `true`/`false`, nunca `null`) — `true` si esa persona
+  tiene una Offering activa ahora. Es solo el booleano: no trae el tipo
+  (`LISTEN`/`TALK`/`DISTRACT`), ni Need ni preferences. **No llames a
+  `GET /api/users/{id}/availability` por cada card**: sería N+1 desde el cliente y ya no
+  hace falta. Un perfil `PRIVATE` puede estar `available: true` con `bio: null`. El tipo
+  sigue disponible solo en `GET /api/users/{id}/availability` (al abrir un perfil).
 - No hay marcado de notificación individual como leída, solo "marcar todas".
 - No hay "typing indicator" ni presencia online/offline en el chat.
 - No hay soft-delete recuperable expuesto (los `REMOVED` de post/comment no tienen

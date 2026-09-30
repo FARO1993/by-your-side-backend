@@ -4,9 +4,18 @@ import java.util.UUID;
 
 // `bio` viaja en null cuando profileVisibility es PRIVATE -- mismo criterio
 // que PublicUserProfileResponse, para no exponer el mismo dato por una ruta
-// lateral (discover) que la vista de perfil ya oculta. Discover excluye a
-// quienes ya se sigue (ver UserService), asi que `followState` aca nunca es
-// "FOLLOWING" en la practica -- solo "NONE" o "REQUESTED" (Fase 9.3).
+// lateral (discover) que la vista de perfil ya oculta. `followState` (Fase
+// 9.3): en browse nunca es "FOLLOWING" (browse excluye a quienes ya se
+// sigue); en search (B5.1) puede ser NONE, REQUESTED o FOLLOWING.
+//
+// `available` (Backend Debt B5.2): true si el usuario tiene un
+// CompanionOffering ACTIVO ahora (misma regla temporal que
+// GET /api/users/{userId}/availability). Nunca null: un boolean simple para
+// que el frontend no distinga "desconocido/oculto/no disponible". A
+// proposito NO expone el OfferingType (LISTEN/TALK/DISTRACT) ni nada del
+// Need -- eso queda en Companion/Public Availability. Es independiente de
+// profileVisibility: un perfil PRIVATE puede estar available y aun asi
+// `bio` sigue en null (no desbloquea datos de perfil).
 public record DiscoverUserResponse(
         UUID id,
         String username,
@@ -14,6 +23,7 @@ public record DiscoverUserResponse(
         String bio,
         String avatarUrl,
         String profileVisibility,
-        String followState
+        String followState,
+        boolean available
 ) {
 }
