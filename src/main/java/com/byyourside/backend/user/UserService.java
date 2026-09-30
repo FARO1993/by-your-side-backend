@@ -1,6 +1,7 @@
 package com.byyourside.backend.user;
 
 import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.companion.CompanionOfferingService;
 import com.byyourside.backend.companion.CompanionPreferenceService;
 import com.byyourside.backend.mute.UserMuteRepository;
 import com.byyourside.backend.follow.FollowRepository;
@@ -42,6 +43,7 @@ public class UserService {
     private final UserBlockRepository userBlockRepository;
     private final UserMuteRepository userMuteRepository;
     private final CompanionPreferenceService companionPreferenceService;
+    private final CompanionOfferingService companionOfferingService;
 
     public UserResponse getCurrentUser(UserPrincipal principal) {
         User user = findByIdOrThrow(principal.getId());
@@ -236,6 +238,12 @@ public class UserService {
         Set<UUID> pendingIds = Set.copyOf(
                 followRequestRepository.findPendingOutgoingTargetIdsAmong(principal.getId(), idsInPage));
 
+        // Backend Debt B5.2: `available` en batch -- UNA query por pagina
+        // sobre companion_offerings (source of truth), nunca una por
+        // usuario. Los ids ya estan autorizados por la query de Discover
+        // (block/mute/status/etc.), asi que aca solo se resuelve true/false.
+        Set<UUID> availableIds = companionOfferingService.findAvailableUserIdsAmong(idsInPage);
+
         return result.map(user -> new DiscoverUserResponse(
                 user.getId(),
                 user.getUsername(),
@@ -243,7 +251,8 @@ public class UserService {
                 user.getProfileVisibility() == ProfileVisibility.PUBLIC ? user.getBio() : null,
                 user.getAvatarUrl(),
                 user.getProfileVisibility().name(),
-                resolveDiscoverFollowState(user.getId(), followingIds, pendingIds).name()
+                resolveDiscoverFollowState(user.getId(), followingIds, pendingIds).name(),
+                availableIds.contains(user.getId())
         ));
     }
 

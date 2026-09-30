@@ -764,8 +764,17 @@ Browse y búsqueda de personas, paginado.
   y valores no numéricos (`?size=abc`, `?page=x`). No hay clamp silencioso.
 - **Response 200**: `Page<DiscoverUserResponse>`:
   ```json
-  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC", "followState": "NONE" }
+  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC", "followState": "NONE", "available": false }
   ```
+  **`available` (Backend Debt B5.2)**: `boolean` **no nullable** (siempre `true` o
+  `false`). `true` si el usuario tiene un `CompanionOffering` activo ahora — exactamente la
+  misma regla temporal que `GET /api/users/{userId}/availability` (Offering con
+  `expiresAt` posterior a ahora; una fila expirada que siga en la tabla cuenta como
+  `false`). Solo comunica *si* está disponible: **nunca** expone el tipo (`LISTEN`/`TALK`/
+  `DISTRACT`), ni el Need, ni las preferences. Es independiente de `profileVisibility`: un
+  perfil `PRIVATE` puede venir con `available: true` y aun así `bio: null`. Se resuelve en
+  batch (una query por página). El frontend **no** debe llamar a
+  `GET /api/users/{id}/availability` por cada card de Discover.
   `bio` viaja en `null` cuando `profileVisibility` es `PRIVATE` — mismo criterio que
   `GET /api/users/{userId}`, para no exponer el mismo dato por una ruta lateral.
   `followState` (Fase 9.3) en **browse** es siempre `"NONE"` o `"REQUESTED"` — nunca
