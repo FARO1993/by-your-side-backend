@@ -1197,14 +1197,40 @@ criterio de eficiencia `EXISTS` que la query legacy). Reglas preservadas exactam
   el `OfferingType` nunca viaja en Discover. `UserService` inyecta
   `CompanionOfferingService` (sin ciclo: este depende de repositories y `BlockPolicy`, no
   de `UserService`). Queries por página: browse = 4 (página, count, pendientes,
-  availability); search = 5 (+ following).
-- **Sin migración**: ninguna de las queries requiere un índice nuevo a esta escala
-  (`LIKE '%x%'` no usa btree; `pg_trgm` se evaluaría con evidencia de volumen). Para
-  `available`, `UNIQUE(user_id)` de `companion_offerings` (V15) ya cubre el acceso por
-  `user_id IN (...)` (a lo sumo una fila por usuario; `expires_at` se filtra sobre esa
-  única fila).
-- **Diferido**: integración frontend (B5.3), status summary (B5.4, sin necesidad de
-  producto concreta). Las preferences (B4B.5) no entran en Discover.
+  availability); search = 5 (+ following) — más 1 de status summary desde B5.4A (5 y 6).
+- **`statusMood` (B5.4A)**: `DiscoverUserResponse.statusMood` (`StatusMood`, nullable; se
+  reutiliza el enum del dominio Status) sale de `StatusService.findCurrentMoodsAmong(ids)` →
+  `StatusRepository.findCurrentMoodsForUsers(ids, now)`: **una sola query por página**,
+  nunca `GET /{id}/status` por usuario. Es una query nativa `SELECT DISTINCT ON (user_id)
+  user_id, mood ... WHERE user_id IN (:ids) AND expires_at > :now ORDER BY user_id,
+  created_at DESC, id DESC` con proyección `StatusMoodProjection` (solo userId + mood, nunca
+  el `Status` completo).
+  - **Múltiples filas activas**: cada `POST /api/statuses` crea una fila nueva y las
+    anteriores siguen vigentes hasta expirar, así que no hay "una fila activa por usuario".
+    La vigente es la de `created_at` más reciente; el desempate por `id DESC` hace el
+    resultado determinista si dos comparten `created_at`. "Activo" = `expires_at`
+    estrictamente posterior a ahora (igual que `findTopByUserIdAndExpiresAtAfter...`); una
+    fila expirada más reciente no le gana a una activa más vieja.
+  - **Privacidad (PRIVATE)**: es el gate de `ProfileAccessPolicy.canViewFullProfile` (el que
+    usa `GET /{id}/status`) en versión batch, resuelto en `UserService.discoverUsers` sin
+    queries extra: solo se consultan los ids de perfiles `PUBLIC` o de `PRIVATE` con follow
+    aceptado (fila en `follows`, ya resuelta para `followState`). El propio usuario y el
+    bloqueo ya están excluidos por la query de Discover y mute también (no se repiten en la
+    query de status). Un `PRIVATE` sin acceso **ni siquiera entra** a la query de status, y
+    se devuelve `null`: no hay `hasStatus` porque un booleano filtraría la existencia del
+    status. En browse (que excluye followed) ningún `PRIVATE` expone mood.
+  - **Dependencias**: `UserService` inyecta `StatusService`, que depende de repositories,
+    `BlockPolicy` y `ProfileAccessPolicy`, no de `UserService` (sin ciclo). Página vacía o
+    sin ids visibles => no se consulta.
+  - **Índice (V18)**: `statuses` solo tenía el índice de la PK (V1). Se agrega
+    `idx_statuses_user_id_expires_at ON statuses(user_id, expires_at)`: `user_id` líder
+    sirve el `IN`, `expires_at` filtra dentro de cada usuario. Sin él, cada página de
+    Discover haría un scan secuencial de una tabla que crece con cada POST. También sirve a
+    las queries existentes por usuario + vigencia.
+- **Migración**: B5.1/B5.2 no necesitaron índices (`LIKE '%x%'` no usa btree; `pg_trgm` se
+  evaluaría con evidencia de volumen; `UNIQUE(user_id)` de `companion_offerings` (V15) ya
+  cubre `available`). B5.4A agrega V18 (índice de `statuses`, ver arriba).
+- **Diferido**: integración frontend (B5.3). Las preferences (B4B.5) no entran en Discover.
 
 ## Persistencia
 
@@ -1240,6 +1266,7 @@ Migraciones versionadas en `src/main/resources/db/migration/`:
 | `V14__add_companion_needs.sql` (Backend Debt B4B.1) | `companion_needs` — primera tabla del nuevo dominio Companion (ver diseño B4A), con `UNIQUE(user_id)`: garantiza a nivel DB "máximo un Need activo por usuario" (B4B.1 no conserva historial, el Need anterior se reemplaza). Sin índices adicionales — el índice que crea la propia constraint `UNIQUE` ya resuelve la única query real (lookup por `user_id`); a diferencia de `V3` (`availabilities`, cero índices y sin ninguna garantía de unicidad) |
 | `V15__add_companion_offerings.sql` (Backend Debt B4B.2) | `companion_offerings` — segunda tabla del dominio Companion, mismo `UNIQUE(user_id)` que `companion_needs`. A diferencia de `V14`, agrega `INDEX(type, expires_at)`: justificado porque acá sí hay una query real que filtra por `type` + `expires_at` sin pasar por `user_id` (`findRandomCandidatesByType`) — no se duplicó un índice simple sobre `user_id` (ya lo crea el `UNIQUE`) |
 | `V16__retire_availabilities_table.sql` (Backend Debt B4B.3) | `DROP TABLE availabilities` — sin backfill, sin conversión de filas (pérdida deliberada, decisión B4A #6). Verificado antes del drop: sin FKs entrantes, sin views, sin triggers. `companion_offerings` pasa a ser la única source of truth global |
+| `V18__add_statuses_user_expires_index.sql` (Backend Debt B5.4A) | `CREATE INDEX idx_statuses_user_id_expires_at ON statuses(user_id, expires_at)` — `statuses` solo tenía el índice de la PK; el status summary de Discover resuelve `user_id IN (...) AND expires_at > now` por página. Solo índice, sin cambios de datos. |
 
 **Compatibilidad de `V4` con usuarios existentes**: la columna `email_verified` se agrega
 con `DEFAULT TRUE` (así todas las filas ya existentes en el momento del `ALTER TABLE`
