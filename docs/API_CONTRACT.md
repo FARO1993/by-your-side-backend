@@ -764,7 +764,7 @@ Browse y búsqueda de personas, paginado.
   y valores no numéricos (`?size=abc`, `?page=x`). No hay clamp silencioso.
 - **Response 200**: `Page<DiscoverUserResponse>`:
   ```json
-  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC", "followState": "NONE", "available": false }
+  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC", "followState": "NONE", "available": false, "statusMood": null }
   ```
   **`available` (Backend Debt B5.2)**: `boolean` **no nullable** (siempre `true` o
   `false`). `true` si el usuario tiene un `CompanionOffering` activo ahora — exactamente la
@@ -775,6 +775,18 @@ Browse y búsqueda de personas, paginado.
   perfil `PRIVATE` puede venir con `available: true` y aun así `bio: null`. Se resuelve en
   batch (una query por página). El frontend **no** debe llamar a
   `GET /api/users/{id}/availability` por cada card de Discover.
+  **`statusMood` (Backend Debt B5.4A)**: `StatusMood | null` (`"WELL"`,
+  `"NEED_DISTRACTION"`, `"DIFFICULT_DAY"`, `"NEED_TO_TALK"`, `"HERE_FOR_SOMEONE"` — el mismo
+  enum de `/status`). Es el mood del status **activo** del usuario (`expiresAt` posterior a
+  ahora); si tiene varios activos, el de `createdAt` más reciente (desempate por `id`).
+  Es `null` si no hay status activo **o** si el viewer no puede ver el perfil completo de
+  esa persona: un perfil `PRIVATE` solo expone el mood a un follower **aceptado** (mismo
+  gate que `GET /api/users/{userId}/status`); `PUBLIC` lo expone siempre. En browse, donde
+  los followed no aparecen, un `PRIVATE` nunca trae mood. **No existe `hasStatus`** ni
+  ningún otro dato del status (ni id, ni fechas, ni reacciones): un booleano filtraría que
+  un perfil privado tiene un status activo. `null` = no mostrar señal de mood. Es
+  independiente de `available`. Se resuelve en batch (una query por página); el frontend
+  **no** debe llamar a `GET /api/users/{id}/status` por cada card.
   `bio` viaja en `null` cuando `profileVisibility` es `PRIVATE` — mismo criterio que
   `GET /api/users/{userId}`, para no exponer el mismo dato por una ruta lateral.
   `followState` (Fase 9.3) en **browse** es siempre `"NONE"` o `"REQUESTED"` — nunca

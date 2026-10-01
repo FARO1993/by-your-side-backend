@@ -9,6 +9,8 @@ import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.follow.FollowRequestStatus;
 import com.byyourside.backend.follow.FollowState;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.status.StatusMood;
+import com.byyourside.backend.status.StatusService;
 import com.byyourside.backend.storage.ImageStorageService;
 import com.byyourside.backend.user.dto.DiscoverUserResponse;
 import com.byyourside.backend.user.dto.PublicUserProfileResponse;
@@ -28,6 +30,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -44,6 +47,7 @@ public class UserService {
     private final UserMuteRepository userMuteRepository;
     private final CompanionPreferenceService companionPreferenceService;
     private final CompanionOfferingService companionOfferingService;
+    private final StatusService statusService;
 
     public UserResponse getCurrentUser(UserPrincipal principal) {
         User user = findByIdOrThrow(principal.getId());
@@ -244,6 +248,23 @@ public class UserService {
         // (block/mute/status/etc.), asi que aca solo se resuelve true/false.
         Set<UUID> availableIds = companionOfferingService.findAvailableUserIdsAmong(idsInPage);
 
+        // Backend Debt B5.4A: `statusMood` en batch -- UNA query por pagina,
+        // y solo para los ids cuyo perfil completo ve el viewer: PUBLIC, o
+        // PRIVATE con follow ACEPTADO. Es exactamente el gate de
+        // ProfileAccessPolicy.canViewFullProfile (que usa GET
+        // /api/users/{id}/status) en version batch: el propio usuario y el
+        // block ya estan excluidos por la query de Discover, y un follow
+        // aceptado es una fila en `follows` (followingIds; en browse esta
+        // vacio porque browse excluye a los followed, asi que ahi ningun
+        // PRIVATE expone mood). Un PRIVATE sin acceso ni siquiera entra a la
+        // query de status: asi no se filtra si tiene un status activo.
+        List<UUID> statusVisibleIds = result.getContent().stream()
+                .filter(user -> user.getProfileVisibility() == ProfileVisibility.PUBLIC
+                        || followingIds.contains(user.getId()))
+                .map(User::getId)
+                .toList();
+        Map<UUID, StatusMood> moodByUserId = statusService.findCurrentMoodsAmong(statusVisibleIds);
+
         return result.map(user -> new DiscoverUserResponse(
                 user.getId(),
                 user.getUsername(),
@@ -252,7 +273,8 @@ public class UserService {
                 user.getAvatarUrl(),
                 user.getProfileVisibility().name(),
                 resolveDiscoverFollowState(user.getId(), followingIds, pendingIds).name(),
-                availableIds.contains(user.getId())
+                availableIds.contains(user.getId()),
+                moodByUserId.get(user.getId())
         ));
     }
 

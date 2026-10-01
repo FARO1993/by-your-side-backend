@@ -1,5 +1,7 @@
 package com.byyourside.backend.user.dto;
 
+import com.byyourside.backend.status.StatusMood;
+
 import java.util.UUID;
 
 // `bio` viaja en null cuando profileVisibility es PRIVATE -- mismo criterio
@@ -16,6 +18,14 @@ import java.util.UUID;
 // Need -- eso queda en Companion/Public Availability. Es independiente de
 // profileVisibility: un perfil PRIVATE puede estar available y aun asi
 // `bio` sigue en null (no desbloquea datos de perfil).
+//
+// `statusMood` (Backend Debt B5.4A): mood del status ACTIVO mas reciente
+// (expiresAt > now), o null. Es null tanto si no hay status activo como si
+// el viewer no puede ver el perfil completo (PRIVATE sin follow aceptado) --
+// el mismo gate que GET /api/users/{userId}/status. A proposito NO existe un
+// `hasStatus`: un booleano filtraria la existencia de un status en un perfil
+// privado. Nada mas del Status viaja aca (ni id, createdAt, expiresAt ni
+// reacciones). Independiente de `available`.
 public record DiscoverUserResponse(
         UUID id,
         String username,
@@ -24,6 +34,7 @@ public record DiscoverUserResponse(
         String avatarUrl,
         String profileVisibility,
         String followState,
-        boolean available
+        boolean available,
+        StatusMood statusMood
 ) {
 }

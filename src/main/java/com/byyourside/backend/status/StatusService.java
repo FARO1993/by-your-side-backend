@@ -95,6 +95,25 @@ public class StatusService {
         return toResponse(status, count, myReaction);
     }
 
+    // Backend Debt B5.4A: version batch y minima de getCurrentStatus, usada
+    // por Discover (UserService.discoverUsers) para `statusMood`. UNA query
+    // por pagina; devuelve solo el mood vigente mas reciente por usuario
+    // (userId -> mood), nunca el Status completo. Usuarios sin status activo
+    // no aparecen en el mapa. NO chequea acceso: el caller solo debe pasar
+    // ids cuyo perfil completo es visible para el viewer (mismo gate que
+    // getCurrentStatus -- ver UserService.discoverUsers). Lista vacia => ni
+    // se consulta.
+    public Map<UUID, StatusMood> findCurrentMoodsAmong(Collection<UUID> userIds) {
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, StatusMood> moods = new HashMap<>();
+        for (StatusMoodProjection row : statusRepository.findCurrentMoodsForUsers(userIds, Instant.now())) {
+            moods.put(row.getUserId(), StatusMood.valueOf(row.getMood()));
+        }
+        return moods;
+    }
+
     public List<StatusResponse> getFeed(UserPrincipal principal) {
         List<UUID> relevantUserIds = followRepository.findByFollowerId(principal.getId()).stream()
                 .map(follow -> follow.getFollowing().getId())
