@@ -1,7 +1,12 @@
 package com.byyourside.backend.user;
 
+import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.storage.ImageStorageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,6 +46,15 @@ class UserControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private UserMuteRepository userMuteRepository;
+
+    @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private ObjectMapper objectMapper;
 
     private String token;
@@ -48,12 +62,23 @@ class UserControllerIntegrationTest {
     @Autowired
     private FollowRepository followRepository;
 
+    @Autowired
+    private FollowRequestRepository followRequestRepository;
+
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
     @MockBean
     private ImageStorageService imageStorageService;
 
     @BeforeEach
     void setUp() throws Exception {
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();   // ← primero: borra lo que referencia a users
+        emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();     // ← ahora sí, sin FKs pendientes
 
         String registerBody = """
@@ -73,7 +98,7 @@ class UserControllerIntegrationTest {
                 .getResponse()
                 .getContentAsString();
 
-        token = objectMapper.readTree(response).get("token").asText();
+        token = objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private User registerUser(String username, String email, UserRole role) throws Exception {
@@ -141,6 +166,212 @@ class UserControllerIntegrationTest {
                 .andExpect(jsonPath("$.bio").value("Building ByYourSide"))
                 .andExpect(jsonPath("$.avatarUrl").value("https://example.com/avatar.png"))
                 .andExpect(jsonPath("$.username").value("facu"));
+    }
+
+    // ============================================================
+    // PATCH /me — VALIDACION (Backend Debt B2)
+    // ============================================================
+
+    @Test
+    void patch_updatesDisplayName() throws Exception { // A
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "Facundo R"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Facundo R"));
+    }
+
+    @Test
+    void patch_updatesBio() throws Exception { // B
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"bio": "mi nueva bio"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bio").value("mi nueva bio"));
+    }
+
+    @Test
+    void patch_updatesBothDisplayNameAndBio() throws Exception { // C
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "Facundo R", "bio": "mi nueva bio"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Facundo R"))
+                .andExpect(jsonPath("$.bio").value("mi nueva bio"));
+    }
+
+    @Test
+    void patch_partialDisplayName_keepsExistingBio() throws Exception { // D
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"bio": "bio original"}
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "Nombre nuevo"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Nombre nuevo"))
+                .andExpect(jsonPath("$.bio").value("bio original"));
+    }
+
+    @Test
+    void patch_partialBio_keepsExistingDisplayName() throws Exception { // E
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "Nombre original"}
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"bio": "bio nueva"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Nombre original"))
+                .andExpect(jsonPath("$.bio").value("bio nueva"));
+    }
+
+    @Test
+    void patch_blankBio_clearsItToNull() throws Exception { // F
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"bio": "bio a borrar"}
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"bio": "   "}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bio").doesNotExist());
+
+        User reloaded = userRepository.findByUsername("facu").orElseThrow();
+        org.assertj.core.api.Assertions.assertThat(reloaded.getBio()).isNull();
+    }
+
+    @Test
+    void patch_blankDisplayName_isRejected() throws Exception { // G
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "   "}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("displayName cannot be blank"));
+
+        User reloaded = userRepository.findByUsername("facu").orElseThrow();
+        org.assertj.core.api.Assertions.assertThat(reloaded.getDisplayName()).isEqualTo("Facu");
+    }
+
+    @Test
+    void patch_displayNameTooLong_isRejected() throws Exception { // H
+        String body = "{\"displayName\": \"" + "a".repeat(101) + "\"}";
+
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void patch_bioTooLong_isRejected() throws Exception { // I
+        String body = "{\"bio\": \"" + "a".repeat(501) + "\"}";
+
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void patch_profileVisibility_stillUpdatable() throws Exception { // J
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "Facundo R", "profileVisibility": "PRIVATE"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Facundo R"))
+                .andExpect(jsonPath("$.profileVisibility").value("PRIVATE"));
+    }
+
+    @Test
+    void patch_doesNotLoseAvatarUrl_whenUpdatingOnlyDisplayName() throws Exception { // K
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"avatarUrl": "https://example.com/avatar.png"}
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "Facundo R"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.avatarUrl").value("https://example.com/avatar.png"));
+    }
+
+    @Test
+    void patch_response_reflectsPersistedValues_andTrimsWhitespace() throws Exception { // L
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "  Facundo R  ", "bio": "  con espacios  "}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Facundo R"))
+                .andExpect(jsonPath("$.bio").value("con espacios"));
+    }
+
+    @Test
+    void patch_changesArePersisted_onReloadOfMe() throws Exception { // M
+        mockMvc.perform(patch("/api/users/me")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"displayName": "Facundo R", "bio": "bio persistida"}
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/users/me")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Facundo R"))
+                .andExpect(jsonPath("$.bio").value("bio persistida"));
     }
 
     @Test

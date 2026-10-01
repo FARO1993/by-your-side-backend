@@ -11,6 +11,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/notifications")
@@ -36,5 +37,14 @@ public class NotificationController {
     public ResponseEntity<Void> markAllAsRead(@AuthenticationPrincipal UserPrincipal principal) {
         notificationService.markAllAsRead(principal.getId());
         return ResponseEntity.noContent().build();
+    }
+
+    // Backend Debt B3: el owner es SIEMPRE el usuario autenticado -- nunca
+    // se acepta un recipientId por body/path distinto al principal (mismo
+    // criterio que block/mute).
+    @PatchMapping("/{notificationId}/read")
+    public ResponseEntity<NotificationResponse> markAsRead(@AuthenticationPrincipal UserPrincipal principal,
+                                                            @PathVariable UUID notificationId) {
+        return ResponseEntity.ok(notificationService.markAsRead(principal.getId(), notificationId));
     }
 }

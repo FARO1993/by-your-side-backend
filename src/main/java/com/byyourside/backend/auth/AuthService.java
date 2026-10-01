@@ -28,6 +28,8 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
+    private final EmailVerificationService emailVerificationService;
+    private final AuthSessionService authSessionService;
 
     public AuthResponse register(RegisterRequest request) {
         if (userRepository.existsByEmail(request.email())) {
@@ -49,10 +51,13 @@ public class AuthService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Email already in use");
         }
 
-        UserPrincipal principal = new UserPrincipal(user);
-        String token = jwtService.generateToken(principal);
+        // Usuario nuevo arranca sin verificar (default de la entidad) y con
+        // un token de verificacion ya emitido -- ver EmailVerificationService.
+        // emailVerified=false no bloquea la sesion: son dos decisiones de
+        // producto independientes (Fase 1.1 vs Fase 1.5).
+        emailVerificationService.issue(user);
 
-        return new AuthResponse(token, user.getUsername(), user.getRole().name());
+        return buildAuthResponse(user);
     }
 
     public AuthResponse login(LoginRequest request) {
@@ -67,10 +72,24 @@ public class AuthService {
                 new UsernamePasswordAuthenticationToken(user.getUsername(), request.password())
         );
 
-        UserPrincipal principal = new UserPrincipal(user);
-        String token = jwtService.generateToken(principal);
+        // Cada login exitoso crea una sesion NUEVA (familia de refresh token
+        // propia) -- no cierra las sesiones de otros dispositivos ya
+        // conectados con esta misma cuenta.
+        return buildAuthResponse(user);
+    }
 
-        return new AuthResponse(token, user.getUsername(), user.getRole().name());
+    private AuthResponse buildAuthResponse(User user) {
+        UserPrincipal principal = new UserPrincipal(user);
+        String accessToken = jwtService.generateToken(principal);
+        String refreshToken = authSessionService.createSession(user);
+
+        return new AuthResponse(
+                accessToken,
+                refreshToken,
+                "Bearer",
+                jwtService.getAccessTokenExpirationSeconds(),
+                user.getUsername(),
+                user.getRole().name());
     }
 
     // Genera un username interno a partir del nombre a mostrar -- el usuario

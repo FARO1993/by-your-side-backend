@@ -1,0 +1,14 @@
+-- Backend Debt B5.4A: status summary de Discover resuelve, por pagina,
+-- "status activo mas reciente de cada usuario" con
+--   WHERE user_id IN (...) AND expires_at > now
+-- `statuses` solo tenia el indice de la PK (V1): sin esto, cada pagina de
+-- Discover haria un scan secuencial de toda la tabla. Una fila por cada
+-- POST /api/statuses (las anteriores siguen vigentes hasta expirar), asi que
+-- la tabla crece sin limite y el indice se justifica desde ya.
+--
+-- (user_id, expires_at): user_id como columna lider sirve el IN, y
+-- expires_at filtra dentro de cada usuario. Tambien cubre las queries
+-- existentes por usuario + vigencia (findTopByUserIdAndExpiresAtAfter...,
+-- findActiveStatusesForUsers). Naming igual a
+-- idx_companion_offerings_type_expires_at (V15).
+CREATE INDEX idx_statuses_user_id_expires_at ON statuses(user_id, expires_at);

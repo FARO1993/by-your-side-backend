@@ -128,6 +128,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
     }
 
+    // Query param / path variable con un tipo que no matchea (ej. ?size=abc,
+    // ?page=x): error del cliente, no un 500 del catch-all.
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex,
+                                                            HttpServletRequest request) {
+        ErrorResponse body = new ErrorResponse(
+                Instant.now(),
+                HttpStatus.BAD_REQUEST.value(),
+                HttpStatus.BAD_REQUEST.getReasonPhrase(),
+                "Invalid value for parameter '" + ex.getName() + "'",
+                request.getRequestURI()
+        );
+        return ResponseEntity.badRequest().body(body);
+    }
+
     // Body mal formado: JSON invalido, tipo que no matchea (ej. UUID con formato incorrecto,
     // enum con un valor que no existe, numero donde se esperaba texto, etc.)
     @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)

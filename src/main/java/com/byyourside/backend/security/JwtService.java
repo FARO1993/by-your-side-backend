@@ -17,12 +17,18 @@ public class JwtService {
     @Value("${app.jwt.secret}")
     private String secret;
 
-    @Value("${app.jwt.expiration-ms}")
-    private long expirationMs;
+    @Value("${app.jwt.access-expiration-ms}")
+    private long accessExpirationMs;
+
+    // Segundos, no millis: es lo que se expone en AuthResponse.expiresIn /
+    // RefreshResponse.expiresIn, convencion OAuth2 (RFC 6749 "expires_in").
+    public long getAccessTokenExpirationSeconds() {
+        return accessExpirationMs / 1000;
+    }
 
     public String generateToken(UserPrincipal userPrincipal) {
         Date now = new Date();
-        Date expiry = new Date(now.getTime() + expirationMs);
+        Date expiry = new Date(now.getTime() + accessExpirationMs);
 
         return Jwts.builder()
                 .subject(userPrincipal.getUsername())

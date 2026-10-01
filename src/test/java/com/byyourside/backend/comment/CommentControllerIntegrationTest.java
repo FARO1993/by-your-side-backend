@@ -1,5 +1,9 @@
 package com.byyourside.backend.comment;
 
+import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.post.Post;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.post.PostVisibility;
@@ -42,10 +46,22 @@ class CommentControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private UserMuteRepository userMuteRepository;
+
+    @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private PostRepository postRepository;
 
     @Autowired
     private CommentRepository commentRepository;
+
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -62,6 +78,10 @@ class CommentControllerIntegrationTest {
     void setUp() throws Exception {
         commentRepository.deleteAll();
         postRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com", UserRole.USER);
@@ -100,7 +120,7 @@ class CommentControllerIntegrationTest {
                 .getResponse()
                 .getContentAsString();
 
-        return objectMapper.readTree(response).get("token").asText();
+        return objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private record LoginPayload(String email, String password) {

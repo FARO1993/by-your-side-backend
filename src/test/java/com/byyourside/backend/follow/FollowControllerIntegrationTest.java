@@ -1,5 +1,9 @@
 package com.byyourside.backend.follow;
 
+import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.notification.NotificationRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -38,7 +42,19 @@ class FollowControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private UserMuteRepository userMuteRepository;
+
+    @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private FollowRepository followRepository;
+
+    @Autowired
+    private FollowRequestRepository followRequestRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -49,6 +65,9 @@ class FollowControllerIntegrationTest {
     @Autowired
     private NotificationRepository notificationRepository;
 
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
+
     private User facu;
     private User soumia;
     private String facuToken;
@@ -56,7 +75,12 @@ class FollowControllerIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         notificationRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");
@@ -87,7 +111,7 @@ class FollowControllerIntegrationTest {
                 .getResponse()
                 .getContentAsString();
 
-        return objectMapper.readTree(response).get("token").asText();
+        return objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private record LoginPayload(String email, String password) {

@@ -33,6 +33,16 @@ public class FollowController {
         return ResponseEntity.noContent().build();
     }
 
+    // Direccion inversa a unfollow: acá `userId` es alguien que ME sigue a
+    // MI, y lo estoy expulsando de mis propios followers -- no afecta si yo
+    // tambien lo sigo a el.
+    @DeleteMapping("/followers/{userId}")
+    public ResponseEntity<Void> removeFollower(@AuthenticationPrincipal UserPrincipal principal,
+                                               @PathVariable UUID userId) {
+        followService.removeFollower(principal, userId);
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/{userId}/followers")
     public ResponseEntity<List<UserSummary>> getFollowers(@PathVariable UUID userId) {
         return ResponseEntity.ok(followService.getFollowers(userId));

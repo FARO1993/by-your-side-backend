@@ -1,5 +1,9 @@
 package com.byyourside.backend.report;
 
+import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -39,7 +43,19 @@ class ReportControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private UserMuteRepository userMuteRepository;
+
+    @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private ReportRepository reportRepository;
+
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -55,6 +71,10 @@ class ReportControllerIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         reportRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();
 
         regularUser = registerUser("facu", "facu@example.com", UserRole.USER);
@@ -87,7 +107,7 @@ class ReportControllerIntegrationTest {
                 .getResponse()
                 .getContentAsString();
 
-        return objectMapper.readTree(response).get("token").asText();
+        return objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private record LoginPayload(String email, String password) {

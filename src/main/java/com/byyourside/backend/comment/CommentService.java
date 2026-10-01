@@ -6,6 +6,7 @@ import com.byyourside.backend.comment.dto.UpdateCommentRequest;
 import com.byyourside.backend.notification.NotificationService;
 import com.byyourside.backend.notification.NotificationType;
 import com.byyourside.backend.post.Post;
+import com.byyourside.backend.post.PostAccessPolicy;
 import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.user.User;
@@ -29,11 +30,18 @@ public class CommentService {
     private final PostRepository postRepository;
     private final UserRepository userRepository;
     private final NotificationService notificationService;
+    private final PostAccessPolicy postAccessPolicy;
 
     @Transactional
     public CommentResponse createComment(UserPrincipal principal, UUID postId, CreateCommentRequest request) {
         Post post = postRepository.findById(postId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found"));
+
+        // Mismo criterio 404 que PostService.getPost: no revelar que un post
+        // invisible existe permitiendo comentarlo de todos modos.
+        if (!postAccessPolicy.canView(principal.getId(), post)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
+        }
 
         User author = userRepository.findById(principal.getId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
@@ -51,8 +59,11 @@ public class CommentService {
         return toResponse(comment);
     }
 
-    public List<CommentResponse> getComments(UUID postId) {
-        if (!postRepository.existsById(postId)) {
+    public List<CommentResponse> getComments(UserPrincipal principal, UUID postId) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found"));
+
+        if (!postAccessPolicy.canView(principal.getId(), post)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
         }
 

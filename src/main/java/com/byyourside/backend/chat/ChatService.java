@@ -1,6 +1,7 @@
 package com.byyourside.backend.chat;
 
-import com.byyourside.backend.availability.AvailabilityRepository;
+import com.byyourside.backend.block.BlockPolicy;
+import com.byyourside.backend.companion.CompanionOfferingService;
 import com.byyourside.backend.chat.dto.ConversationResponse;
 import com.byyourside.backend.chat.dto.MessageResponse;
 import com.byyourside.backend.follow.FollowRepository;
@@ -17,7 +18,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -33,7 +33,8 @@ public class ChatService {
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
     private final SimpMessagingTemplate messagingTemplate;
-    private final AvailabilityRepository availabilityRepository;
+    private final CompanionOfferingService companionOfferingService;
+    private final BlockPolicy blockPolicy;
 
     @Transactional
     public ConversationResponse getOrCreateConversation(UserPrincipal principal, UUID otherUserId) {
@@ -46,16 +47,34 @@ public class ChatService {
         User otherUser = userRepository.findById(otherUserId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Target user not found"));
 
-        boolean connected = followRepository.existsByFollowerIdAndFollowingId(currentUser.getId(), otherUser.getId())
-                || followRepository.existsByFollowerIdAndFollowingId(otherUser.getId(), currentUser.getId());
+        // Fase 9.4: un bloqueo (en cualquier direccion) anula tanto la
+        // conexion por follow como la disponibilidad de companion -- se
+        // trata exactamente igual que "no conectados, no disponible", sin
+        // agregar una rama de error nueva que distinga el caso de bloqueo
+        // (mismo mensaje generico de abajo), para no revelar la relacion.
+        // Esto tambien cubre el inicio de charla via Companion, que pasa por
+        // este mismo metodo -- un solo punto de integracion, sin duplicar.
+        boolean blocked = blockPolicy.isBlockedBetween(currentUser.getId(), otherUser.getId());
+
+        boolean connected = !blocked
+                && (followRepository.existsByFollowerIdAndFollowingId(currentUser.getId(), otherUser.getId())
+                || followRepository.existsByFollowerIdAndFollowingId(otherUser.getId(), currentUser.getId()));
 
         // El modo compañia permite el primer contacto sin follow previo,
         // pero solo si la otra persona dio consentimiento explicito y
         // publico declarandose disponible para acompañar en este momento.
         // Nunca al reves: nadie puede mensajear a alguien "disponible"
         // sin que esa disponibilidad este activa ahora mismo.
-        boolean targetIsAvailableForCompanionship =
-                availabilityRepository.existsByUserIdAndExpiresAtAfter(otherUser.getId(), Instant.now());
+        //
+        // Backend Debt B4B.3: companion_offerings es la UNICA fuente de
+        // verdad de disponibilidad -- ya no se consulta la extinta
+        // AvailabilityRepository/tabla `availabilities` (retirada en V16).
+        // Cualquier OfferingType activo alcanza (LISTEN/TALK/DISTRACT, sin
+        // distincion) -- este chequeo es autorizacion de primer contacto,
+        // no matching: el Need del caller NUNCA participa de esta decision
+        // (Need no es control de acceso a chat).
+        boolean targetIsAvailableForCompanionship = !blocked
+                && companionOfferingService.hasActiveOffering(otherUser.getId());
 
         if (!connected && !targetIsAvailableForCompanionship) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
@@ -108,6 +127,14 @@ public class ChatService {
 
         ensureParticipant(conversation, principal.getId());
 
+        User recipient = conversation.otherParticipant(principal.getId());
+        // Fase 9.4: el historial de la conversacion se preserva siempre (ver
+        // getMessages, sin cambios) -- un bloqueo solo impide ENVIAR
+        // mensajes nuevos, no leer los viejos.
+        if (blockPolicy.isBlockedBetween(principal.getId(), recipient.getId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "You cannot send messages to this user");
+        }
+
         User sender = userRepository.findById(principal.getId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
 
@@ -123,7 +150,6 @@ public class ChatService {
 
         MessageResponse response = toMessageResponse(message);
 
-        User recipient = conversation.otherParticipant(principal.getId());
         messagingTemplate.convertAndSendToUser(recipient.getUsername(), "/queue/messages", response);
 
         return response;

@@ -1,8 +1,15 @@
 package com.byyourside.backend.status;
 
+import com.byyourside.backend.block.UserBlockRepository;
+import com.byyourside.backend.mute.UserMuteRepository;
+import com.byyourside.backend.auth.EmailVerificationTokenRepository;
+import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
+import com.byyourside.backend.follow.FollowRequest;
+import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.notification.NotificationRepository;
+import com.byyourside.backend.user.ProfileVisibility;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.UserRole;
@@ -44,7 +51,19 @@ class StatusControllerIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private UserBlockRepository userBlockRepository;
+
+    @Autowired
+    private UserMuteRepository userMuteRepository;
+
+    @Autowired
+    private AuthSessionRepository authSessionRepository;
+
+    @Autowired
     private FollowRepository followRepository;
+
+    @Autowired
+    private FollowRequestRepository followRequestRepository;
 
     @Autowired
     private StatusReactionRepository statusReactionRepository;
@@ -54,6 +73,9 @@ class StatusControllerIntegrationTest {
 
     @Autowired
     private NotificationRepository notificationRepository;
+
+    @Autowired
+    private EmailVerificationTokenRepository emailVerificationTokenRepository;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -71,7 +93,12 @@ class StatusControllerIntegrationTest {
         notificationRepository.deleteAll();
         statusReactionRepository.deleteAll();
         statusRepository.deleteAll();
+        followRequestRepository.deleteAll();
         followRepository.deleteAll();
+        emailVerificationTokenRepository.deleteAll();
+        authSessionRepository.deleteAll();
+        userBlockRepository.deleteAll();
+        userMuteRepository.deleteAll();
         userRepository.deleteAll();
 
         facu = registerUser("facu", "facu@example.com");
@@ -81,6 +108,10 @@ class StatusControllerIntegrationTest {
     }
 
     private User registerUser(String username, String email) {
+        return registerUser(username, email, ProfileVisibility.PUBLIC);
+    }
+
+    private User registerUser(String username, String email, ProfileVisibility visibility) {
         User user = User.builder()
                 .username(username)
                 .email(email)
@@ -88,6 +119,7 @@ class StatusControllerIntegrationTest {
                 .displayName(username)
                 .role(UserRole.USER)
                 .status(UserStatus.ACTIVE)
+                .profileVisibility(visibility)
                 .build();
         return userRepository.save(user);
     }
@@ -99,7 +131,7 @@ class StatusControllerIntegrationTest {
                         .content(body))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        return objectMapper.readTree(response).get("token").asText();
+        return objectMapper.readTree(response).get("accessToken").asText();
     }
 
     private record LoginPayload(String email, String password) {
@@ -231,5 +263,151 @@ class StatusControllerIntegrationTest {
     void shouldReturnUnauthorized_withoutToken() throws Exception {
         mockMvc.perform(get("/api/statuses/feed"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // ============================================================
+    // STATUS DIRECTO POR USUARIO (Backend Debt B2)
+    // ============================================================
+
+    @Test
+    void directStatus_ownerWithStatus_returnsIt() throws Exception { // X
+        statusRepository.save(Status.builder().user(facu).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(get("/api/users/{userId}/status", facu.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mood").value("WELL"));
+    }
+
+    @Test
+    void directStatus_otherUserWithVisibleStatus_returnsIt() throws Exception { // Y
+        statusRepository.save(Status.builder().user(soumia).mood(StatusMood.NEED_TO_TALK)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(get("/api/users/{userId}/status", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mood").value("NEED_TO_TALK"))
+                .andExpect(jsonPath("$.user.username").value("soumia"));
+    }
+
+    @Test
+    void directStatus_userWithoutStatus_returnsNullBody() throws Exception { // Z
+        mockMvc.perform(get("/api/users/{userId}/status", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(content().string(""));
+    }
+
+    @Test
+    void directStatus_expiredStatus_doesNotAppear() throws Exception { // AA
+        statusRepository.save(Status.builder().user(soumia).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().minus(1, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(get("/api/users/{userId}/status", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(content().string(""));
+    }
+
+    @Test
+    void directStatus_returnsMostRecentActive() throws Exception { // AB
+        statusRepository.save(Status.builder().user(soumia).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+        Thread.sleep(10);
+        statusRepository.save(Status.builder().user(soumia).mood(StatusMood.HERE_FOR_SOMEONE)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(get("/api/users/{userId}/status", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mood").value("HERE_FOR_SOMEONE"));
+    }
+
+    @Test
+    void directStatus_privateProfile_acceptedFollower_isVisible() throws Exception { // AC
+        User privateUser = registerUser("privado", "privado@example.com", ProfileVisibility.PRIVATE);
+        followRepository.save(Follow.builder().follower(facu).following(privateUser).build());
+        statusRepository.save(Status.builder().user(privateUser).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(get("/api/users/{userId}/status", privateUser.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mood").value("WELL"));
+    }
+
+    @Test
+    void directStatus_privateProfile_pendingRequest_notVisible() throws Exception { // AD
+        User privateUser = registerUser("privado", "privado@example.com", ProfileVisibility.PRIVATE);
+        followRequestRepository.save(FollowRequest.builder().requester(facu).target(privateUser).build());
+        statusRepository.save(Status.builder().user(privateUser).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(get("/api/users/{userId}/status", privateUser.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void directStatus_privateProfile_none_notVisible() throws Exception { // AE
+        User privateUser = registerUser("privado", "privado@example.com", ProfileVisibility.PRIVATE);
+        statusRepository.save(Status.builder().user(privateUser).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(get("/api/users/{userId}/status", privateUser.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void directStatus_blockedByTarget_returnsNotFound() throws Exception { // AF
+        statusRepository.save(Status.builder().user(soumia).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(post("/api/users/{userId}/block", facu.getId())
+                        .header("Authorization", "Bearer " + soumiaToken))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/users/{userId}/status", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void directStatus_blockerSide_alsoReturnsNotFound() throws Exception { // AF (sentido inverso)
+        statusRepository.save(Status.builder().user(soumia).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(post("/api/users/{userId}/block", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/users/{userId}/status", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void directStatus_muteDoesNotBlockAccess() throws Exception { // AG
+        statusRepository.save(Status.builder().user(soumia).mood(StatusMood.WELL)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+
+        mockMvc.perform(post("/api/users/{userId}/mute", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/users/{userId}/status", soumia.getId())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mood").value("WELL"));
+    }
+
+    @Test
+    void directStatus_nonexistentUser_returnsNotFound() throws Exception {
+        mockMvc.perform(get("/api/users/{userId}/status", UUID.randomUUID())
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isNotFound());
     }
 }

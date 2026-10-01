@@ -3,9 +3,10 @@ package com.byyourside.backend.post;
 import com.byyourside.backend.post.dto.CreatePostRequest;
 import com.byyourside.backend.post.dto.PostResponse;
 import com.byyourside.backend.post.dto.UpdatePostRequest;
+import com.byyourside.backend.postresponse.PostResponseService;
+import com.byyourside.backend.postresponse.dto.CreatePostResponseRequest;
+import com.byyourside.backend.postresponse.dto.PostResponseSummaryResponse;
 import com.byyourside.backend.security.UserPrincipal;
-import com.byyourside.backend.support.PostSupportService;
-import com.byyourside.backend.support.dto.SupportSummaryResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -25,7 +26,7 @@ public class PostController {
 
     private final PostService postService;
 
-    private final PostSupportService postSupportService;
+    private final PostResponseService postResponseService;
 
     @PostMapping
     public ResponseEntity<PostResponse> createPost(@AuthenticationPrincipal UserPrincipal principal,
@@ -56,17 +57,36 @@ public class PostController {
         return ResponseEntity.noContent().build();
     }
 
+    // Backend Debt B1 -- endpoint nuevo: upsert real (crea o cambia de tipo,
+    // idempotente si es el mismo tipo). El autor no puede responder a su
+    // propio post.
+    @PutMapping("/{postId}/response")
+    public ResponseEntity<PostResponseSummaryResponse> upsertResponse(@AuthenticationPrincipal UserPrincipal principal,
+                                                                       @PathVariable UUID postId,
+                                                                       @Valid @RequestBody CreatePostResponseRequest request) {
+        return ResponseEntity.ok(postResponseService.upsertResponse(principal, postId, request.type()));
+    }
+
+    @DeleteMapping("/{postId}/response")
+    public ResponseEntity<PostResponseSummaryResponse> deleteResponse(@AuthenticationPrincipal UserPrincipal principal,
+                                                                       @PathVariable UUID postId) {
+        return ResponseEntity.ok(postResponseService.deleteResponse(principal, postId));
+    }
+
+    // LEGACY (Backend Debt B1) -- preservado por compatibilidad temporal,
+    // opera sobre la misma fila que /response. Preferir PUT/DELETE
+    // /{postId}/response en integraciones nuevas. Ver docs/API_CONTRACT.md.
     @PostMapping("/{postId}/support")
-    public ResponseEntity<SupportSummaryResponse> supportPost(@AuthenticationPrincipal UserPrincipal principal,
-                                                              @PathVariable UUID postId) {
-        SupportSummaryResponse response = postSupportService.addSupport(principal, postId);
+    public ResponseEntity<PostResponseSummaryResponse> supportPost(@AuthenticationPrincipal UserPrincipal principal,
+                                                                    @PathVariable UUID postId) {
+        PostResponseSummaryResponse response = postResponseService.addLegacySupport(principal, postId);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     @DeleteMapping("/{postId}/support")
-    public ResponseEntity<SupportSummaryResponse> unsupportPost(@AuthenticationPrincipal UserPrincipal principal,
-                                                                @PathVariable UUID postId) {
-        return ResponseEntity.ok(postSupportService.removeSupport(principal, postId));
+    public ResponseEntity<PostResponseSummaryResponse> unsupportPost(@AuthenticationPrincipal UserPrincipal principal,
+                                                                      @PathVariable UUID postId) {
+        return ResponseEntity.ok(postResponseService.removeLegacySupport(principal, postId));
     }
 
     @GetMapping("/{postId}")

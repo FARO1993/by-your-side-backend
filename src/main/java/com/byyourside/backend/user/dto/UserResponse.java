@@ -11,6 +11,9 @@ public record UserResponse(
         String bio,
         String avatarUrl,
         String role,
-        Instant createdAt
+        Instant createdAt,
+        boolean emailVerified,
+        Instant emailVerifiedAt,
+        String profileVisibility
 ) {
 }

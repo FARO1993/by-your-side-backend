@@ -1,10 +1,12 @@
 package com.byyourside.backend.status;
 
+import com.byyourside.backend.block.BlockPolicy;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.notification.NotificationService;
 import com.byyourside.backend.notification.NotificationType;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.status.dto.StatusResponse;
+import com.byyourside.backend.user.ProfileAccessPolicy;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
 import com.byyourside.backend.user.dto.UserSummary;
@@ -31,6 +33,8 @@ public class StatusService {
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
     private final NotificationService notificationService;
+    private final BlockPolicy blockPolicy;
+    private final ProfileAccessPolicy profileAccessPolicy;
 
     @Transactional
     public StatusResponse setStatus(UserPrincipal principal, StatusMood mood) {
@@ -46,13 +50,78 @@ public class StatusService {
         return toResponse(status, 0, null);
     }
 
+    // Backend Debt B2: contrato directo para "el status actual de este
+    // usuario" -- no infiere desde /statuses/feed (nunca recorre ni carga
+    // el feed completo para filtrar en memoria). Reusa exactamente la misma
+    // definicion de "actual" que ya existia sin usar en el repositorio
+    // (findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc, ORDER BY
+    // createdAt DESC + expiresAt > now, misma semantica que feed/getFeed y
+    // que AvailabilityService.getMine para "disponibilidad propia
+    // actual") -- ninguna segunda definicion de "actual".
+    //
+    // Acceso: reusa ProfileAccessPolicy.canViewFullProfile tal cual (mismo
+    // gate que perfil completo/posts) -- NO una policy nueva. Esto cubre
+    // bloqueo (Fase 9.4, via BlockPolicy dentro de canViewFullProfile) y
+    // perfil PRIVATE sin follower aceptado, con el mismo 404 generico que
+    // post/comment/support/reaccion de estado (nunca revela existencia de
+    // bloqueo ni de perfil privado). Mute (Fase 9.5) NO se chequea a
+    // proposito -- mute nunca es control de acceso: si A muteo a B pero
+    // puede acceder directamente al perfil de B, A puede seguir consultando
+    // su status con normalidad (el feed agregado si sigue filtrando mute,
+    // ver findActiveStatusesForUsers).
+    public StatusResponse getCurrentStatus(UserPrincipal principal, UUID userId) {
+        User target = userRepository.findById(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
+
+        if (!profileAccessPolicy.canViewFullProfile(principal.getId(), target)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+        }
+
+        // Sin status activo: 200 con body null, mismo criterio que
+        // AvailabilityService.getMine -- una ausencia genuina de dato no es
+        // un 404 (eso ya se resolvio arriba, para el caso de acceso).
+        Status status = statusRepository
+                .findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc(userId, Instant.now())
+                .orElse(null);
+        if (status == null) {
+            return null;
+        }
+
+        long count = statusReactionRepository.countByStatusId(status.getId());
+        String myReaction = statusReactionRepository.findByStatusIdAndActorId(status.getId(), principal.getId())
+                .map(r -> r.getType().name())
+                .orElse(null);
+
+        return toResponse(status, count, myReaction);
+    }
+
+    // Backend Debt B5.4A: version batch y minima de getCurrentStatus, usada
+    // por Discover (UserService.discoverUsers) para `statusMood`. UNA query
+    // por pagina; devuelve solo el mood vigente mas reciente por usuario
+    // (userId -> mood), nunca el Status completo. Usuarios sin status activo
+    // no aparecen en el mapa. NO chequea acceso: el caller solo debe pasar
+    // ids cuyo perfil completo es visible para el viewer (mismo gate que
+    // getCurrentStatus -- ver UserService.discoverUsers). Lista vacia => ni
+    // se consulta.
+    public Map<UUID, StatusMood> findCurrentMoodsAmong(Collection<UUID> userIds) {
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, StatusMood> moods = new HashMap<>();
+        for (StatusMoodProjection row : statusRepository.findCurrentMoodsForUsers(userIds, Instant.now())) {
+            moods.put(row.getUserId(), StatusMood.valueOf(row.getMood()));
+        }
+        return moods;
+    }
+
     public List<StatusResponse> getFeed(UserPrincipal principal) {
         List<UUID> relevantUserIds = followRepository.findByFollowerId(principal.getId()).stream()
                 .map(follow -> follow.getFollowing().getId())
                 .collect(Collectors.toList());
         relevantUserIds.add(principal.getId());
 
-        List<Status> activeStatuses = statusRepository.findActiveStatusesForUsers(relevantUserIds, Instant.now());
+        List<Status> activeStatuses = statusRepository.findActiveStatusesForUsers(
+                relevantUserIds, Instant.now(), principal.getId());
 
         // La query ya viene ordenada por usuario + mas reciente primero:
         // nos quedamos con la primera ocurrencia de cada usuario (su estado actual).
@@ -72,6 +141,14 @@ public class StatusService {
         Status status = statusRepository.findById(statusId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Status not found"));
 
+        // Fase 9.4: reaccionar a un estado es una interaccion directa
+        // usuario-a-usuario que no pasa por PostAccessPolicy (los estados son
+        // un dominio separado de los posts) -- mismo 404 generico que un
+        // status inexistente, para no revelar el bloqueo.
+        if (blockPolicy.isBlockedBetween(principal.getId(), status.getUser().getId())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Status not found");
+        }
+
         User actor = userRepository.findById(principal.getId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
 
@@ -83,7 +160,11 @@ public class StatusService {
         statusReactionRepository.save(reaction);
 
         if (isNewReaction) {
-            notificationService.notify(status.getUser(), actor, NotificationType.NEW_STATUS_REACTION, null);
+            // Backend Debt B3: statusId real, nunca reusando postId (los
+            // estados son un dominio separado de los posts) -- `status` ya
+            // esta cargado en este punto, sin query extra.
+            notificationService.notify(status.getUser(), actor, NotificationType.NEW_STATUS_REACTION,
+                    null, status.getId(), null);
         }
 
         long count = statusReactionRepository.countByStatusId(statusId);
