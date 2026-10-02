@@ -1959,6 +1959,115 @@ de recomendación, anti-spam, reporte automático al silenciar.
 
 ---
 
+## 14. Jugar acompañado (`/api/game-rooms`) — requiere autenticación
+
+Salas privadas de a dos para los juegos de Distraerme. **No hay ganadores, puntajes ni rankings**: el backend no conoce las reglas de ningún juego. Valida quién puede jugar con quién, ordena las jugadas (`seq`) y las reparte por WebSocket. Las reglas viven en el frontend, que arma el mismo tablero en ambos lados a partir de `seed`.
+
+Juegos (`game`): `MEMORY`, `PUZZLE`, `GARDEN`.
+
+Ciclo de vida: `INVITED` → `ACTIVE` → `ENDED`. Una sala `ENDED` tiene `endReason`:
+
+| `endReason` | Cuándo |
+|---|---|
+| `DECLINED` | La persona invitada dijo "ahora no" (o salió antes de aceptar) |
+| `CANCELLED` | Quien invitó la canceló, o la reemplazó por otra invitación a otro juego |
+| `LEFT` | Alguien salió de una partida activa |
+| `EXPIRED` | Invitación sin respuesta por 30 min, o partida sin jugadas por 6 h |
+| `UNAVAILABLE` | Ya no se puede jugar entre esas dos personas (incluye un bloqueo, sin revelarlo) |
+
+### Objeto `GameRoom`
+
+```json
+{
+  "id": "uuid",
+  "game": "MEMORY",
+  "status": "INVITED",
+  "endReason": null,
+  "host":  { "id": "uuid", "username": "facu", "displayName": "Facu", "avatarUrl": null },
+  "guest": { "id": "uuid", "username": "soumia", "displayName": "Soumia", "avatarUrl": null },
+  "seed": 1234567,
+  "eventCount": 0,
+  "createdAt": "2026-10-02T18:00:00Z",
+  "startedAt": null,
+  "endedAt": null,
+  "expiresAt": "2026-10-02T18:30:00Z"
+}
+```
+
+`seed` es un entero positivo que entra en un `number` de JS. `expiresAt` solo tiene valor mientras la sala está `INVITED`.
+
+### `POST /api/game-rooms`
+
+Invita a alguien. Body: `{ "game": "MEMORY", "guestId": "uuid" }` → `201` + `GameRoom`.
+
+- Solo se puede invitar a **vínculos conocidos**: follow en cualquier dirección, o una charla ya existente (por ejemplo, de Modo compañía).
+- `403` *"You can only invite people you already know"* si no hay vínculo **o si hay un bloqueo**. Es el mismo mensaje en ambos casos.
+- `400` si te invitás a vos; `404` si la persona no existe.
+- Volver a invitar a la misma persona al mismo juego devuelve la invitación pendiente (idempotente). Invitarla a otro juego cancela la anterior.
+- `429` con más de 5 invitaciones pendientes propias.
+- La persona invitada recibe un mensaje `INVITATION` por WebSocket.
+
+### `GET /api/game-rooms`
+
+Mis salas abiertas (`INVITED` o `ACTIVE`, como host o como guest), de la más nueva a la más vieja. Sirve para mostrar invitaciones recibidas y para retomar una partida.
+
+### `GET /api/game-rooms/{roomId}`
+
+`404` si no participás (no se revela que la sala existe).
+
+### `POST /api/game-rooms/{roomId}/accept`
+
+Solo la persona invitada. `200` + sala `ACTIVE`. `403` si sos quien invitó; `409` si la invitación ya no está disponible (vencida, cancelada o rechazada).
+
+### `POST /api/game-rooms/{roomId}/decline`
+
+Solo la persona invitada. `200` + sala `ENDED`/`DECLINED`.
+
+### `POST /api/game-rooms/{roomId}/leave`
+
+Cualquiera de las dos personas, **siempre**. Es idempotente. Si la sala es una invitación, la cancela (host) o la rechaza (guest); si es una partida, termina con `LEFT`.
+
+### `POST /api/game-rooms/{roomId}/events`
+
+Una jugada. Body: `{ "type": "FLIP", "payload": { "index": 4 } }` → `201`:
+
+```json
+{ "roomId": "uuid", "seq": 1, "actorId": "uuid", "type": "FLIP", "payload": { "index": 4 }, "createdAt": "..." }
+```
+
+- `type` va en MAYÚSCULAS (`^[A-Z][A-Z_]{0,31}$`). `payload` es JSON libre de hasta 2000 caracteres; el backend no lo interpreta.
+- `409` si la sala no está `ACTIVE`, o si llegó al tope de 5000 jugadas.
+- Las dos personas (incluida la que jugó) reciben un mensaje `EVENT`, que es el orden definitivo.
+
+### `GET /api/game-rooms/{roomId}/events?after=0`
+
+Jugadas con `seq > after`, en orden, hasta 1000 por página. Sirve para reconstruir la partida al entrar o reconectar.
+
+### `GET /api/game-rooms/{roomId}/history`
+
+Para juegos que **persisten entre partidas** (hoy solo `GARDEN`): las jugadas de las salas anteriores de ese mismo juego entre las mismas dos personas, de la más vieja a la más nueva (por sala y `seq`). Cada jugada trae el `roomId` de su sala. El frontend reproduce primero esta historia y después las jugadas de la sala actual, así el jardín compartido sigue creciendo de una vez a la otra.
+
+- Para cualquier otro juego devuelve `[]`.
+- `404` si no participás de la sala.
+- Tope: 3000 jugadas (un jardín completo usa unas 80).
+- Con un bloqueo no se pueden abrir salas nuevas entre esas dos personas: el jardín queda oculto para ambas, **sin borrarse**. Si se desbloquean y vuelven a jugar, reaparece.
+
+### WebSocket: `/user/queue/game-rooms`
+
+```json
+{ "kind": "INVITATION" | "ROOM" | "EVENT", "room": GameRoom | null, "event": GameEvent | null }
+```
+
+- `INVITATION`: te invitaron (`room`).
+- `ROOM`: cambió el estado de una sala tuya (aceptada, rechazada, terminada…).
+- `EVENT`: una jugada nueva.
+
+### Decisiones de diseño explícitas
+
+- **Bloqueos.** Bloquear cierra cualquier invitación o partida abierta entre las dos personas (`UNAVAILABLE`) y no se puede volver a invitar. Ninguna de las dos ve la causa.
+- **No hay contenido libre.** Ningún juego deja que una persona le mande a otra texto o dibujos libres: las jugadas son movimientos acotados (dar vuelta una carta, colocar una pieza, plantar o regar). Un juego de dibujo ("Dibujemos") se evaluó y **se descartó** (oct. 2026): permitiría mandar contenido que lastime antes de que un reporte llegue a revisarse. Antes de sumar un `GameType` nuevo, mantener esta regla.
+- **La charla al lado del juego** usa la conversación de chat existente; no hay un chat nuevo dentro de la sala.
+
 ## Formato de error
 
 Todas las respuestas de error (4xx/5xx) devueltas por el backend usan esta forma
