@@ -65,6 +65,12 @@ public class GameRoomController {
         return ResponseEntity.ok(gameRoomService.events(principal, roomId, after));
     }
 
+    @GetMapping("/{roomId}/history")
+    public ResponseEntity<List<GameEventResponse>> history(@AuthenticationPrincipal UserPrincipal principal,
+                                                           @PathVariable UUID roomId) {
+        return ResponseEntity.ok(gameRoomService.history(principal, roomId));
+    }
+
     @PostMapping("/{roomId}/events")
     public ResponseEntity<GameEventResponse> addEvent(@AuthenticationPrincipal UserPrincipal principal,
                                                       @PathVariable UUID roomId,
