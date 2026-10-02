@@ -41,6 +41,12 @@ public class Post {
     @Builder.Default
     private PostStatus status = PostStatus.VISIBLE;
 
+    // Advertencia de contenido (V19): el autor marca que el post habla de algo
+    // sensible. Solo cambia como lo muestra el frontend, no quien lo ve.
+    @Column(name = "content_warning", nullable = false)
+    @Builder.Default
+    private boolean contentWarning = false;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 

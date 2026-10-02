@@ -833,7 +833,8 @@ Sube un avatar a Cloudinary y actualiza el perfil propio.
   "supportedByCurrentUser": false,
   "presenceCount": 2,
   "listeningCount": 1,
-  "currentUserResponseType": "HUG"
+  "currentUserResponseType": "HUG",
+  "contentWarning": false
 }
 ```
 `author` es un `UserSummary` (siempre esta misma forma en toda la API: `id`, `username`,
@@ -849,10 +850,16 @@ pasan a derivarse de los mismos datos: `supportCount = presenceCount + listening
 ambos pares de campos salen del mismo conteo. Ver § "Respuestas a un post" más abajo para
 el detalle completo (reemplaza el "apoyo" binario anterior).
 
+**Advertencia de contenido (V19)**: `contentWarning` es un campo nuevo (adición pura al
+final, no rompe contrato). `true` si el autor marcó que el post habla de algo sensible; el
+frontend lo muestra difuminado con "Tocá para leer". **No cambia quién puede ver el
+post** (eso sigue siendo `visibility`): es solo una indicación de cómo mostrarlo. Los
+posts anteriores a V19 viajan en `false`.
+
 ### `POST /api/posts`
 - **Body** (`CreatePostRequest`):
   ```json
-  { "content": "máx 2000 chars, obligatorio", "visibility": "PUBLIC | FOLLOWERS_ONLY | PRIVATE (opcional, default PUBLIC)" }
+  { "content": "máx 2000 chars, obligatorio", "visibility": "PUBLIC | FOLLOWERS_ONLY | PRIVATE (opcional, default PUBLIC)", "contentWarning": "boolean (opcional, default false)" }
   ```
 - **Response 201**: `PostResponse` recién creado (`presenceCount: 0`, `listeningCount: 0`,
   `currentUserResponseType: null`, `supportCount: 0`, `supportedByCurrentUser: false`).
@@ -904,7 +911,9 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
 
 ### `PATCH /api/posts/{postId}`
 Solo el autor puede editar. Campos opcionales (solo se aplican los no-null).
-- **Body** (`UpdatePostRequest`): `{ "content": "máx 2000 (opcional)", "visibility": "... (opcional)" }`
+- **Body** (`UpdatePostRequest`): `{ "content": "máx 2000 (opcional)", "visibility": "... (opcional)", "contentWarning": "boolean (opcional)" }`
+  — `contentWarning` omitido o `null` deja la advertencia como estaba; `true`/`false` la
+  activa o la quita.
 - **Response 200**: `PostResponse` actualizado (`presenceCount`/`listeningCount`/
   `currentUserResponseType`, y los legacy `supportCount`/`supportedByCurrentUser`, se
   recalculan reales — editar el post nunca resetea las respuestas que ya tenía).

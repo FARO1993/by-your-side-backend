@@ -30,6 +30,8 @@ public record PostResponse(
         boolean supportedByCurrentUser,
         long presenceCount,
         long listeningCount,
-        String currentUserResponseType
+        String currentUserResponseType,
+        // Advertencia de contenido (V19). Adicion pura al final: no rompe contrato.
+        boolean contentWarning
 ) {
 }
