@@ -46,6 +46,11 @@ public class GameRoomService {
     static final int MAX_EVENTS_PER_ROOM = 5000;
     static final int MAX_PAYLOAD_CHARS = 2000;
     static final int MAX_EVENTS_PER_PAGE = 1000;
+    // Tope de la historia de un jardin compartido. Un jardin completo son unas
+    // 80 jugadas utiles (20 canteros x plantar + 3 riegos): sobra margen.
+    static final int MAX_HISTORY_EVENTS = 3000;
+    // Juegos cuyo estado sigue de una partida a la otra entre las mismas dos personas.
+    private static final Set<GameType> PERSISTENT_GAMES = Set.of(GameType.GARDEN);
 
     private static final Set<GameRoomStatus> OPEN = Set.of(GameRoomStatus.INVITED, GameRoomStatus.ACTIVE);
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -218,6 +223,25 @@ public class GameRoomService {
         findForParticipant(roomId, principal.getId(), false);
         return eventRepository.findAfter(roomId, Math.max(0, after), PageRequest.of(0, MAX_EVENTS_PER_PAGE)).stream()
                 .map(event -> toEventResponse(event, roomId))
+                .toList();
+    }
+
+    /**
+     * Jugadas de las partidas anteriores del mismo juego entre las mismas dos
+     * personas, para juegos que persisten (el Jardin compartido crece de una
+     * vez a la otra). Para el resto devuelve una lista vacia.
+     * Si hay un bloqueo no se pueden abrir salas nuevas, asi que el jardin
+     * queda oculto para ambas sin borrarse; si se desbloquean, vuelve.
+     */
+    public List<GameEventResponse> history(UserPrincipal principal, UUID roomId) {
+        GameRoom room = findForParticipant(roomId, principal.getId(), false);
+        if (!PERSISTENT_GAMES.contains(room.getGame())) {
+            return List.of();
+        }
+        return eventRepository.findHistory(room.getGame(), room.getId(), room.getCreatedAt(),
+                        room.getHost().getId(), room.getGuest().getId(), PageRequest.of(0, MAX_HISTORY_EVENTS))
+                .stream()
+                .map(event -> toEventResponse(event, event.getRoom().getId()))
                 .toList();
     }
 

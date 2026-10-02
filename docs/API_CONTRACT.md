@@ -2043,6 +2043,15 @@ Una jugada. Body: `{ "type": "FLIP", "payload": { "index": 4 } }` → `201`:
 
 Jugadas con `seq > after`, en orden, hasta 1000 por página. Sirve para reconstruir la partida al entrar o reconectar.
 
+### `GET /api/game-rooms/{roomId}/history`
+
+Para juegos que **persisten entre partidas** (hoy solo `GARDEN`): las jugadas de las salas anteriores de ese mismo juego entre las mismas dos personas, de la más vieja a la más nueva (por sala y `seq`). Cada jugada trae el `roomId` de su sala. El frontend reproduce primero esta historia y después las jugadas de la sala actual, así el jardín compartido sigue creciendo de una vez a la otra.
+
+- Para cualquier otro juego devuelve `[]`.
+- `404` si no participás de la sala.
+- Tope: 3000 jugadas (un jardín completo usa unas 80).
+- Con un bloqueo no se pueden abrir salas nuevas entre esas dos personas: el jardín queda oculto para ambas, **sin borrarse**. Si se desbloquean y vuelven a jugar, reaparece.
+
 ### WebSocket: `/user/queue/game-rooms`
 
 ```json

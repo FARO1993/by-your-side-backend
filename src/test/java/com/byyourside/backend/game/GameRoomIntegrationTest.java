@@ -32,6 +32,7 @@ import java.util.UUID;
 
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.nullValue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -295,6 +296,66 @@ class GameRoomIntegrationTest {
         jdbcTemplate.update("UPDATE game_rooms SET last_activity_at = last_activity_at - interval '7 hours' WHERE id = ?::uuid", roomId);
         event(facuToken, roomId, "FLIP", Map.of("index", 1)).andExpect(status().isConflict());
         room(facuToken, roomId).andExpect(jsonPath("$.endReason").value("EXPIRED"));
+    }
+
+    // ---------- jardin compartido ----------
+
+    @Test
+    void aSharedGardenRemembersWhatTheyPlantedInEarlierGames() throws Exception {
+        String first = startGame("GARDEN");
+        event(facuToken, first, "PLANT", Map.of("index", 0, "species", "girasol")).andExpect(status().isCreated());
+        event(soumiaToken, first, "WATER", Map.of("index", 0)).andExpect(status().isCreated());
+        action(facuToken, first, "leave").andExpect(status().isOk());
+
+        // Otra pareja con su propio jardin: no se mezcla.
+        String other = idOf(invite(facuToken, lu.getId(), "GARDEN").andReturn().getResponse().getContentAsString());
+        action(luToken, other, "accept").andExpect(status().isOk());
+        event(luToken, other, "PLANT", Map.of("index", 3, "species", "lavanda")).andExpect(status().isCreated());
+        action(luToken, other, "leave").andExpect(status().isOk());
+
+        // Una partida de otro juego entre los mismos dos tampoco cuenta.
+        String memory = startGame("MEMORY");
+        event(facuToken, memory, "FLIP", Map.of("index", 1)).andExpect(status().isCreated());
+        action(facuToken, memory, "leave").andExpect(status().isOk());
+
+        String second = idOf(invite(soumiaToken, facu.getId(), "GARDEN").andReturn().getResponse().getContentAsString());
+        action(facuToken, second, "accept").andExpect(status().isOk());
+        event(facuToken, second, "WATER", Map.of("index", 0)).andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/game-rooms/{id}/history", second).header("Authorization", bearer(facuToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(2)))
+                .andExpect(jsonPath("$[0].roomId").value(first))
+                .andExpect(jsonPath("$[0].type").value("PLANT"))
+                .andExpect(jsonPath("$[0].payload.species").value("girasol"))
+                .andExpect(jsonPath("$[1].type").value("WATER"))
+                .andExpect(jsonPath("$[1].actorId").value(soumia.getId().toString()));
+
+        mockMvc.perform(get("/api/game-rooms/{id}/history", memory).header("Authorization", bearer(facuToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
+        mockMvc.perform(get("/api/game-rooms/{id}/history", second).header("Authorization", bearer(luToken)))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void aBlockHidesTheSharedGarden_andUnblockingBringsItBack() throws Exception {
+        String first = startGame("GARDEN");
+        event(facuToken, first, "PLANT", Map.of("index", 2, "species", "tulipan")).andExpect(status().isCreated());
+
+        mockMvc.perform(post("/api/users/{id}/block", soumia.getId()).header("Authorization", bearer(facuToken)))
+                .andExpect(status().is2xxSuccessful());
+        invite(facuToken, soumia.getId(), "GARDEN").andExpect(status().isForbidden());
+        invite(soumiaToken, facu.getId(), "GARDEN").andExpect(status().isForbidden());
+
+        mockMvc.perform(delete("/api/users/{id}/block", soumia.getId()).header("Authorization", bearer(facuToken)))
+                .andExpect(status().is2xxSuccessful());
+        // El bloqueo borró los follows; vuelven a seguirse.
+        followRepository.save(Follow.builder().follower(facu).following(soumia).build());
+        String again = startGame("GARDEN");
+        mockMvc.perform(get("/api/game-rooms/{id}/history", again).header("Authorization", bearer(soumiaToken)))
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].payload.species").value("tulipan"));
     }
 
     // ---------- helpers ----------
