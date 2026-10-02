@@ -8,6 +8,8 @@ public record UpdatePostRequest(
         @Size(max = 2000, message = "Post content must be at most 2000 characters long")
         String content,
 
-        PostVisibility visibility
+        PostVisibility visibility,
+        // Opcional: null = no cambia; true/false = activa o quita la advertencia.
+        Boolean contentWarning
 ) {
 }

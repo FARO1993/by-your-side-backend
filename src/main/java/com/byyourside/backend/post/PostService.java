@@ -46,6 +46,7 @@ public class PostService {
                 .author(author)
                 .content(request.content())
                 .visibility(request.visibility() != null ? request.visibility() : PostVisibility.PUBLIC)
+                .contentWarning(Boolean.TRUE.equals(request.contentWarning()))
                 .build();
 
         post = postRepository.save(post);
@@ -67,6 +68,9 @@ public class PostService {
         }
         if (request.visibility() != null) {
             post.setVisibility(request.visibility());
+        }
+        if (request.contentWarning() != null) {
+            post.setContentWarning(request.contentWarning());
         }
 
         post = postRepository.save(post);
@@ -234,7 +238,8 @@ public class PostService {
                 currentUserResponseType != null,
                 presenceCount,
                 listeningCount,
-                currentUserResponseType
+                currentUserResponseType,
+                post.isContentWarning()
         );
     }
 
