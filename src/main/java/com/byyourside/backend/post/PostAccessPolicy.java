@@ -1,5 +1,6 @@
 package com.byyourside.backend.post;
 
+import com.byyourside.backend.block.BlockPolicy;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.user.ProfileAccessPolicy;
 import com.byyourside.backend.user.User;
@@ -25,6 +26,7 @@ public class PostAccessPolicy {
 
     private final FollowRepository followRepository;
     private final ProfileAccessPolicy profileAccessPolicy;
+    private final BlockPolicy blockPolicy;
 
     public boolean canView(UUID viewerId, Post post) {
         if (post.getStatus() != PostStatus.VISIBLE) {
@@ -34,6 +36,14 @@ public class PostAccessPolicy {
         User author = post.getAuthor();
         if (viewerId.equals(author.getId())) {
             return true;
+        }
+
+        // Post anonimo (V20): siempre PUBLIC y desligado del perfil del autor.
+        // Aplicar la privacidad del perfil (PRIVATE, seguidores) filtraria
+        // informacion sobre quien lo escribio por su sola ausencia. Lo unico
+        // que se respeta es el bloqueo bilateral, con el autor real.
+        if (post.isAnonymous()) {
+            return !blockPolicy.isBlockedBetween(viewerId, author.getId());
         }
 
         if (!profileAccessPolicy.canViewFullProfile(viewerId, author)) {

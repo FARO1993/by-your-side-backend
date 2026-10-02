@@ -833,7 +833,9 @@ Sube un avatar a Cloudinary y actualiza el perfil propio.
   "supportedByCurrentUser": false,
   "presenceCount": 2,
   "listeningCount": 1,
-  "currentUserResponseType": "HUG"
+  "currentUserResponseType": "HUG",
+  "contentWarning": false,
+  "anonymous": false
 }
 ```
 `author` es un `UserSummary` (siempre esta misma forma en toda la API: `id`, `username`,
@@ -849,10 +851,23 @@ pasan a derivarse de los mismos datos: `supportCount = presenceCount + listening
 ambos pares de campos salen del mismo conteo. Ver § "Respuestas a un post" más abajo para
 el detalle completo (reemplaza el "apoyo" binario anterior).
 
+**Advertencia de contenido (V19)**: `contentWarning` es un campo nuevo (adición pura al
+final, no rompe contrato). `true` si el autor marcó que el post habla de algo sensible; el
+frontend lo muestra difuminado con "Tocá para leer". **No cambia quién puede ver el
+post** (eso sigue siendo `visibility`): es solo una indicación de cómo mostrarlo. Los
+posts anteriores a V19 viajan en `false`.
+
+**Posts anónimos (V20)**: `anonymous` es un campo nuevo (adición al final, no rompe
+contrato). En un post `anonymous: true`, **para cualquiera que no sea el autor**:
+`author` viaja en `null` y `followedByCurrentUser` en `false` (si no, revelaría que seguís
+a quien lo escribió). El autor ve su propio post con `author` completo. El autor real
+**siempre** queda guardado: bloqueos, silencios, el límite diario y la moderación
+funcionan con él. Ver § "Posts anónimos" más abajo.
+
 ### `POST /api/posts`
 - **Body** (`CreatePostRequest`):
   ```json
-  { "content": "máx 2000 chars, obligatorio", "visibility": "PUBLIC | FOLLOWERS_ONLY | PRIVATE (opcional, default PUBLIC)" }
+  { "content": "máx 2000 chars, obligatorio", "visibility": "PUBLIC | FOLLOWERS_ONLY | PRIVATE (opcional, default PUBLIC)", "contentWarning": "boolean (opcional, default false)", "anonymous": "boolean (opcional, default false)" }
   ```
 - **Response 201**: `PostResponse` recién creado (`presenceCount: 0`, `listeningCount: 0`,
   `currentUserResponseType: null`, `supportCount: 0`, `supportedByCurrentUser: false`).
@@ -884,6 +899,34 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
   follower efectivo en todo lo demás (seguís pudiendo entrar a su perfil/posts
   directamente, ver § 2).
 
+### Posts anónimos (V20)
+- **Crear**: `POST /api/posts` con `"anonymous": true`. Solo `PUBLIC`: con otra
+  `visibility` responde `400`. **Límite: 3 por persona en 24 h móviles** (cuenta también
+  los borrados) → `429 Too Many Requests`. Publicar con nombre no tiene límite.
+- **Inmutable**: `anonymous` no se puede cambiar en `PATCH`, y un anónimo no puede pasar a
+  `FOLLOWERS_ONLY`/`PRIVATE` (`400`).
+- **Dónde aparecen**: solo en `GET /api/posts/anonymous` (abajo) y por acceso directo
+  (`GET /api/posts/{postId}`). **Nunca** en el feed de seguidores ni en el perfil del autor
+  (`GET /api/users/{id}/posts`), salvo para el propio autor (que los ve en su feed y en su
+  perfil, con su `author`).
+- **Visibilidad**: desligada del perfil del autor (un perfil `PRIVATE` no oculta sus
+  anónimos — aplicarlo filtraría información sobre quién lo escribió). Solo se respeta el
+  **bloqueo bilateral** con el autor real (`404` en acceso directo, excluido del espacio).
+- **Respuestas**: Presencia/Escucha sí (`PUT /api/posts/{id}/response`). **Comentarios
+  no** en la v1: `POST .../comments` → `400`, `GET .../comments` → `[]` (si el autor
+  comentara su propio post, su nombre lo delataría).
+- **Moderación**: `ReportResponse.targetAuthorId` (nuevo) trae el autor real de un post
+  reportado **solo** en `GET /api/reports/queue` y `PATCH /api/reports/{id}/resolve`
+  (MODERATOR/ADMIN). En la respuesta a quien reporta (`POST /api/reports`) viaja en `null`.
+
+### `GET /api/posts/anonymous`
+Espacio anónimo: todos los posts anónimos visibles, orden `createdAt DESC`, sin autor.
+- **Query params**: `page` (default `0`), `size` (default `20`).
+- **Response 200**: `Page<PostResponse>` (`author: null`, `anonymous: true`, salvo los
+  propios).
+- Excluye autores con bloqueo en cualquier dirección y autores silenciados por quien mira
+  (mismo criterio que el feed), siempre con el autor real.
+
 ### `GET /api/posts/{postId}`
 - **Response 200**: `PostResponse`.
 - **Errores**: `404 Not Found` si el post no existe, si existe pero `visibility` no
@@ -904,7 +947,9 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
 
 ### `PATCH /api/posts/{postId}`
 Solo el autor puede editar. Campos opcionales (solo se aplican los no-null).
-- **Body** (`UpdatePostRequest`): `{ "content": "máx 2000 (opcional)", "visibility": "... (opcional)" }`
+- **Body** (`UpdatePostRequest`): `{ "content": "máx 2000 (opcional)", "visibility": "... (opcional)", "contentWarning": "boolean (opcional)" }`
+  — `contentWarning` omitido o `null` deja la advertencia como estaba; `true`/`false` la
+  activa o la quita.
 - **Response 200**: `PostResponse` actualizado (`presenceCount`/`listeningCount`/
   `currentUserResponseType`, y los legacy `supportCount`/`supportedByCurrentUser`, se
   recalculan reales — editar el post nunca resetea las respuestas que ya tenía).
@@ -1212,6 +1257,21 @@ vencido) por cada usuario que sigo + el propio, orden `createdAt DESC`.
   haya silenciado — **unilateral**, filtrado directo en la query (`NOT EXISTS`, mismo
   criterio que el feed de posts, ver §3). Igual que con posts, esto no es redundante con
   ninguna limpieza (mute no toca `follows`).
+
+### `GET /api/statuses/mine/history`
+Historial de ánimo **propio y privado**: todos los statuses que el usuario autenticado
+publicó en los últimos `days` días, **vigentes o vencidos** (las filas de `statuses`
+nunca se borran; "vencido" solo importa para lo social). Pensado para la vista
+"cómo estuviste estos días".
+- **Query params**: `days` (default `30`, rango `1..90`).
+- **Response 200**: `MoodHistoryEntry[]`, orden `createdAt DESC`, tope de 500 entradas:
+  ```json
+  [{ "id": "uuid", "mood": "DIFFICULT_DAY", "createdAt": "2026-10-01T22:10:00Z" }]
+  ```
+- A propósito **sin** `user`, `expiresAt` ni reacciones: no es un status social.
+- **Nunca** incluye statuses de otras personas, aunque las sigas, y no existe una variante
+  por `userId`: el historial de ánimo de alguien solo lo ve esa persona.
+- **Errores**: `400 Bad Request` si `days` está fuera de `1..90`.
 
 ### `POST /api/statuses/{statusId}/react`
 Reacciona a un status. Si ya habías reaccionado, **reemplaza** el tipo de reacción

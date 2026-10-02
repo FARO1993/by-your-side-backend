@@ -41,6 +41,19 @@ public class Post {
     @Builder.Default
     private PostStatus status = PostStatus.VISIBLE;
 
+    // Advertencia de contenido (V19): el autor marca que el post habla de algo
+    // sensible. Solo cambia como lo muestra el frontend, no quien lo ve.
+    @Column(name = "content_warning", nullable = false)
+    @Builder.Default
+    private boolean contentWarning = false;
+
+    // Post anonimo (V20): el autor queda guardado pero la API no lo expone a
+    // terceros (ver PostService#toResponse). Inmutable despues de crear: no
+    // se puede "des-anonimizar" ni anonimizar algo ya publicado con nombre.
+    @Column(nullable = false, updatable = false)
+    @Builder.Default
+    private boolean anonymous = false;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 

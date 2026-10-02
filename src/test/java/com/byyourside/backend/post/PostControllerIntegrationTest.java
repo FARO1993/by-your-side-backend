@@ -29,6 +29,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -171,6 +172,78 @@ class PostControllerIntegrationTest {
                 .andExpect(jsonPath("$.content").value("Hoy fue un dia dificil, pero aca estoy."))
                 .andExpect(jsonPath("$.visibility").value("PUBLIC"))
                 .andExpect(jsonPath("$.author.username").value("facu"));
+    }
+
+    // --- advertencia de contenido (V19) ---
+
+    @Test
+    void shouldCreatePostWithoutContentWarning_byDefault() throws Exception {
+        mockMvc.perform(post("/api/posts")
+                        .header("Authorization", "Bearer " + mainUserToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"content": "un dia tranquilo"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.contentWarning").value(false));
+    }
+
+    @Test
+    void shouldCreatePostWithContentWarning_whenRequested() throws Exception {
+        String response = mockMvc.perform(post("/api/posts")
+                        .header("Authorization", "Bearer " + mainUserToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"content": "hoy fue muy pesado", "contentWarning": true}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.contentWarning").value(true))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        UUID postId = UUID.fromString(objectMapper.readTree(response).get("id").asText());
+        assertThat(postRepository.findById(postId).orElseThrow().isContentWarning()).isTrue();
+
+        mockMvc.perform(get("/api/posts/feed")
+                        .header("Authorization", "Bearer " + mainUserToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].id").value(postId.toString()))
+                .andExpect(jsonPath("$.content[0].contentWarning").value(true));
+    }
+
+    @Test
+    void shouldToggleContentWarning_onUpdate_andKeepItWhenOmitted() throws Exception {
+        UUID postId = createPost(mainUserToken, "contenido original");
+
+        mockMvc.perform(patch("/api/posts/{postId}", postId)
+                        .header("Authorization", "Bearer " + mainUserToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"contentWarning": true}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contentWarning").value(true))
+                .andExpect(jsonPath("$.content").value("contenido original"));
+
+        // Editar solo el texto no toca la advertencia.
+        mockMvc.perform(patch("/api/posts/{postId}", postId)
+                        .header("Authorization", "Bearer " + mainUserToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"content": "contenido editado"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contentWarning").value(true));
+
+        mockMvc.perform(patch("/api/posts/{postId}", postId)
+                        .header("Authorization", "Bearer " + mainUserToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"contentWarning": false}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contentWarning").value(false));
     }
 
     @Test

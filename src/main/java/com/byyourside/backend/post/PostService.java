@@ -19,6 +19,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -29,6 +31,9 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
 public class PostService {
+
+    // Posts anonimos por persona en 24hs moviles (incluye borrados).
+    static final int ANONYMOUS_DAILY_LIMIT = 3;
 
     private final PostRepository postRepository;
     private final UserRepository userRepository;
@@ -42,15 +47,32 @@ public class PostService {
         User author = userRepository.findById(principal.getId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
 
+        PostVisibility visibility = request.visibility() != null ? request.visibility() : PostVisibility.PUBLIC;
+        boolean anonymous = Boolean.TRUE.equals(request.anonymous());
+        if (anonymous) {
+            // Anonimo + FOLLOWERS_ONLY/PRIVATE no tiene sentido: el espacio
+            // anonimo es abierto, y restringirlo a seguidores lo des-anonimiza.
+            if (visibility != PostVisibility.PUBLIC) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Anonymous posts must be PUBLIC");
+            }
+            Instant since = Instant.now().minus(24, ChronoUnit.HOURS);
+            if (postRepository.countByAuthorIdAndAnonymousTrueAndCreatedAtAfter(author.getId(), since)
+                    >= ANONYMOUS_DAILY_LIMIT) {
+                throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Anonymous post limit reached");
+            }
+        }
+
         Post post = Post.builder()
                 .author(author)
                 .content(request.content())
-                .visibility(request.visibility() != null ? request.visibility() : PostVisibility.PUBLIC)
+                .visibility(visibility)
+                .contentWarning(Boolean.TRUE.equals(request.contentWarning()))
+                .anonymous(anonymous)
                 .build();
 
         post = postRepository.save(post);
         // Post recien creado: nunca puede tener respuestas todavia.
-        return toResponse(post, Set.of(), Map.of(), Map.of());
+        return toResponse(post, principal.getId(), Set.of(), Map.of(), Map.of());
     }
 
     @Transactional
@@ -66,7 +88,13 @@ public class PostService {
             post.setContent(request.content());
         }
         if (request.visibility() != null) {
+            if (post.isAnonymous() && request.visibility() != PostVisibility.PUBLIC) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Anonymous posts must be PUBLIC");
+            }
             post.setVisibility(request.visibility());
+        }
+        if (request.contentWarning() != null) {
+            post.setContentWarning(request.contentWarning());
         }
 
         post = postRepository.save(post);
@@ -76,7 +104,7 @@ public class PostService {
         Map<UUID, PostResponseCountProjection> counts = countsByPostId(List.of(postId));
         Map<UUID, String> currentUserTypes = currentUserTypesByPostId(principal.getId(), List.of(postId));
 
-        return toResponse(post, Set.of(), counts, currentUserTypes);
+        return toResponse(post, principal.getId(), Set.of(), counts, currentUserTypes);
     }
 
     @Transactional
@@ -105,6 +133,11 @@ public class PostService {
         Page<Post> postsPage = postRepository.findFeedForUser(feedAuthorIds, principal.getId(), pageable);
 
         return enrichAndMap(principal, postsPage);
+    }
+
+    // Espacio anonimo (V20): ver PostRepository#findAnonymousFeed.
+    public Page<PostResponse> getAnonymousFeed(UserPrincipal principal, Pageable pageable) {
+        return enrichAndMap(principal, postRepository.findAnonymousFeed(principal.getId(), pageable));
     }
 
     public Page<PostResponse> getUserPosts(UserPrincipal principal, UUID authorId, Pageable pageable) {
@@ -159,6 +192,7 @@ public class PostService {
         Map<UUID, String> currentUserTypes = currentUserTypesByPostId(principal.getId(), List.of(postId));
 
         return toResponse(post,
+                principal.getId(),
                 isFollower ? Set.of(authorId) : Set.of(),
                 counts,
                 currentUserTypes);
@@ -189,7 +223,7 @@ public class PostService {
         Map<UUID, PostResponseCountProjection> counts = countsByPostId(postIds);
         Map<UUID, String> currentUserTypes = currentUserTypesByPostId(principal.getId(), postIds);
 
-        return postsPage.map(post -> toResponse(post, followedAuthorIds, counts, currentUserTypes));
+        return postsPage.map(post -> toResponse(post, principal.getId(), followedAuthorIds, counts, currentUserTypes));
     }
 
     private Map<UUID, PostResponseCountProjection> countsByPostId(List<UUID> postIds) {
@@ -206,11 +240,15 @@ public class PostService {
                 .collect(Collectors.toMap(r -> r.getPost().getId(), r -> r.getType().name()));
     }
 
-    private PostResponse toResponse(Post post, Set<UUID> followedAuthorIds,
+    // UNICO lugar que arma un PostResponse: aca se decide si se expone el
+    // autor. En un post anonimo, para cualquiera que no sea el autor, `author`
+    // viaja en null y `followedByCurrentUser` en false.
+    private PostResponse toResponse(Post post, UUID viewerId, Set<UUID> followedAuthorIds,
                                     Map<UUID, PostResponseCountProjection> countsByPost,
                                     Map<UUID, String> currentUserTypeByPost) {
         User author = post.getAuthor();
-        UserSummary authorSummary = new UserSummary(
+        boolean hideAuthor = post.isAnonymous() && !author.getId().equals(viewerId);
+        UserSummary authorSummary = hideAuthor ? null : new UserSummary(
                 author.getId(),
                 author.getUsername(),
                 author.getDisplayName(),
@@ -229,12 +267,14 @@ public class PostService {
                 post.getVisibility().name(),
                 post.getCreatedAt(),
                 post.getUpdatedAt(),
-                followedAuthorIds.contains(author.getId()),
+                !hideAuthor && followedAuthorIds.contains(author.getId()),
                 presenceCount + listeningCount,
                 currentUserResponseType != null,
                 presenceCount,
                 listeningCount,
-                currentUserResponseType
+                currentUserResponseType,
+                post.isContentWarning(),
+                post.isAnonymous()
         );
     }
 

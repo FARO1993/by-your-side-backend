@@ -11,6 +11,11 @@ public record CreatePostRequest(
         String content,
 
         // Opcional: si viene null, el service lo setea en PUBLIC por default.
-        PostVisibility visibility
+        PostVisibility visibility,
+        // Opcional: si viene null, el post se crea sin advertencia de contenido.
+        Boolean contentWarning,
+        // Opcional: si viene true, el post es anonimo (solo PUBLIC, con limite
+        // diario). No se puede cambiar despues.
+        Boolean anonymous
 ) {
 }
