@@ -1,6 +1,7 @@
 package com.byyourside.backend.status;
 
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.status.dto.MoodHistoryEntry;
 import com.byyourside.backend.status.dto.ReactToStatusRequest;
 import com.byyourside.backend.status.dto.SetStatusRequest;
 import com.byyourside.backend.status.dto.StatusResponse;
@@ -31,6 +32,13 @@ public class StatusController {
     @GetMapping("/feed")
     public ResponseEntity<List<StatusResponse>> getFeed(@AuthenticationPrincipal UserPrincipal principal) {
         return ResponseEntity.ok(statusService.getFeed(principal));
+    }
+
+    // Historial de animo propio (privado): ver StatusService#getMyMoodHistory.
+    @GetMapping("/mine/history")
+    public ResponseEntity<List<MoodHistoryEntry>> getMyMoodHistory(@AuthenticationPrincipal UserPrincipal principal,
+                                                                   @RequestParam(defaultValue = "30") int days) {
+        return ResponseEntity.ok(statusService.getMyMoodHistory(principal, days));
     }
 
     @PostMapping("/{statusId}/react")
