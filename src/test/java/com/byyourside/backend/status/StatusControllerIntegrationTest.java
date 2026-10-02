@@ -22,12 +22,14 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
@@ -46,6 +48,9 @@ class StatusControllerIntegrationTest {
 
     @Autowired
     private MockMvc mockMvc;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Autowired
     private UserRepository userRepository;
@@ -257,6 +262,91 @@ class StatusControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.reactionCount").value(0))
                 .andExpect(jsonPath("$.reactedByCurrentUser").isEmpty());
+    }
+
+    // --- historial de animo propio (GET /api/statuses/mine/history) ---
+
+    private Status saveStatus(User user, StatusMood mood, int daysAgo) {
+        Status status = statusRepository.save(Status.builder()
+                .user(user).mood(mood)
+                .expiresAt(Instant.now().plus(24, ChronoUnit.HOURS)).build());
+        // created_at es updatable=false en JPA y lo pone @PrePersist: para
+        // simular dias anteriores se ajusta directo en la base.
+        Instant createdAt = Instant.now().minus(daysAgo, ChronoUnit.DAYS);
+        jdbcTemplate.update("UPDATE statuses SET created_at = ?, expires_at = ? WHERE id = ?",
+                Timestamp.from(createdAt), Timestamp.from(createdAt.plus(24, ChronoUnit.HOURS)), status.getId());
+        return status;
+    }
+
+    @Test
+    void shouldReturnOwnMoodHistory_includingExpired_newestFirst() throws Exception {
+        saveStatus(facu, StatusMood.DIFFICULT_DAY, 5);
+        saveStatus(facu, StatusMood.WELL, 2);
+        saveStatus(facu, StatusMood.NEED_DISTRACTION, 0);
+
+        mockMvc.perform(get("/api/statuses/mine/history")
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(3))
+                .andExpect(jsonPath("$[0].mood").value("NEED_DISTRACTION"))
+                .andExpect(jsonPath("$[1].mood").value("WELL"))
+                .andExpect(jsonPath("$[2].mood").value("DIFFICULT_DAY"))
+                .andExpect(jsonPath("$[0].createdAt").exists())
+                // Vista privada: sin datos de usuario ni reacciones.
+                .andExpect(jsonPath("$[0].user").doesNotExist())
+                .andExpect(jsonPath("$[0].reactionCount").doesNotExist());
+    }
+
+    @Test
+    void shouldOnlyIncludeTheRequestedDays() throws Exception {
+        saveStatus(facu, StatusMood.WELL, 40);
+        saveStatus(facu, StatusMood.DIFFICULT_DAY, 10);
+        saveStatus(facu, StatusMood.NEED_TO_TALK, 1);
+
+        mockMvc.perform(get("/api/statuses/mine/history")
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2));
+
+        mockMvc.perform(get("/api/statuses/mine/history").param("days", "7")
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].mood").value("NEED_TO_TALK"));
+
+        mockMvc.perform(get("/api/statuses/mine/history").param("days", "90")
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(3));
+    }
+
+    @Test
+    void shouldNeverIncludeOtherPeoplesMoods_evenIfFollowed() throws Exception {
+        followRepository.save(Follow.builder().follower(facu).following(soumia).build());
+        saveStatus(soumia, StatusMood.DIFFICULT_DAY, 1);
+        saveStatus(facu, StatusMood.WELL, 1);
+
+        mockMvc.perform(get("/api/statuses/mine/history")
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].mood").value("WELL"));
+    }
+
+    @Test
+    void shouldRejectOutOfRangeDays() throws Exception {
+        mockMvc.perform(get("/api/statuses/mine/history").param("days", "0")
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/statuses/mine/history").param("days", "91")
+                        .header("Authorization", "Bearer " + facuToken))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void shouldReturnUnauthorized_forMoodHistoryWithoutToken() throws Exception {
+        mockMvc.perform(get("/api/statuses/mine/history"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

@@ -49,6 +49,12 @@ public interface StatusRepository extends JpaRepository<Status, UUID> {
 
     Optional<Status> findTopByUserIdAndExpiresAtAfterOrderByCreatedAtDesc(UUID userId, Instant now);
 
+    // Historial de animo propio: TODOS los statuses del usuario desde :since,
+    // vigentes o no (un status vencido sigue siendo parte del historial; las
+    // filas nunca se borran, ver Status#expiresAt). Tope de 500 filas como
+    // defensa: el rango maximo es 90 dias y cada POST /api/statuses crea una.
+    List<Status> findTop500ByUserIdAndCreatedAtAfterOrderByCreatedAtDesc(UUID userId, Instant since);
+
     // Backend Debt B5.4A: status summary de Discover -- UNA query por pagina,
     // devuelve a lo sumo UNA fila por usuario (su mood vigente mas reciente).
     // DISTINCT ON (Postgres, mismo criterio que los ORDER BY RANDOM() nativos

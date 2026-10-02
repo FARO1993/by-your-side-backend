@@ -1222,6 +1222,21 @@ vencido) por cada usuario que sigo + el propio, orden `createdAt DESC`.
   criterio que el feed de posts, ver §3). Igual que con posts, esto no es redundante con
   ninguna limpieza (mute no toca `follows`).
 
+### `GET /api/statuses/mine/history`
+Historial de ánimo **propio y privado**: todos los statuses que el usuario autenticado
+publicó en los últimos `days` días, **vigentes o vencidos** (las filas de `statuses`
+nunca se borran; "vencido" solo importa para lo social). Pensado para la vista
+"cómo estuviste estos días".
+- **Query params**: `days` (default `30`, rango `1..90`).
+- **Response 200**: `MoodHistoryEntry[]`, orden `createdAt DESC`, tope de 500 entradas:
+  ```json
+  [{ "id": "uuid", "mood": "DIFFICULT_DAY", "createdAt": "2026-10-01T22:10:00Z" }]
+  ```
+- A propósito **sin** `user`, `expiresAt` ni reacciones: no es un status social.
+- **Nunca** incluye statuses de otras personas, aunque las sigas, y no existe una variante
+  por `userId`: el historial de ánimo de alguien solo lo ve esa persona.
+- **Errores**: `400 Bad Request` si `days` está fuera de `1..90`.
+
 ### `POST /api/statuses/{statusId}/react`
 Reacciona a un status. Si ya habías reaccionado, **reemplaza** el tipo de reacción
 anterior (no crea una segunda reacción — hay `UNIQUE(status_id, actor_id)` en DB).

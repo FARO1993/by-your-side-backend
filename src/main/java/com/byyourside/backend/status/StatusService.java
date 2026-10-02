@@ -5,6 +5,7 @@ import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.notification.NotificationService;
 import com.byyourside.backend.notification.NotificationType;
 import com.byyourside.backend.security.UserPrincipal;
+import com.byyourside.backend.status.dto.MoodHistoryEntry;
 import com.byyourside.backend.status.dto.StatusResponse;
 import com.byyourside.backend.user.ProfileAccessPolicy;
 import com.byyourside.backend.user.User;
@@ -48,6 +49,24 @@ public class StatusService {
                 .build());
 
         return toResponse(status, 0, null);
+    }
+
+    public static final int MOOD_HISTORY_DEFAULT_DAYS = 30;
+    public static final int MOOD_HISTORY_MAX_DAYS = 90;
+
+    // Historial de animo PROPIO: solo el usuario autenticado, nunca de otra
+    // persona (no existe una variante por userId a proposito). Incluye
+    // statuses vencidos: "actual" importa para lo social, no para el historial.
+    public List<MoodHistoryEntry> getMyMoodHistory(UserPrincipal principal, int days) {
+        if (days < 1 || days > MOOD_HISTORY_MAX_DAYS) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "days must be between 1 and " + MOOD_HISTORY_MAX_DAYS);
+        }
+        Instant since = Instant.now().minus(days, ChronoUnit.DAYS);
+        return statusRepository.findTop500ByUserIdAndCreatedAtAfterOrderByCreatedAtDesc(principal.getId(), since)
+                .stream()
+                .map(status -> new MoodHistoryEntry(status.getId(), status.getMood().name(), status.getCreatedAt()))
+                .toList();
     }
 
     // Backend Debt B2: contrato directo para "el status actual de este
