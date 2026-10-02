@@ -4,6 +4,7 @@ import com.byyourside.backend.block.dto.BlockedUserResponse;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.follow.FollowRequestStatus;
+import com.byyourside.backend.game.GameRoomService;
 import com.byyourside.backend.mute.UserMuteRepository;
 import com.byyourside.backend.user.User;
 import com.byyourside.backend.user.UserRepository;
@@ -28,6 +29,7 @@ public class BlockService {
     private final FollowRepository followRepository;
     private final FollowRequestRepository followRequestRepository;
     private final UserMuteRepository userMuteRepository;
+    private final GameRoomService gameRoomService;
 
     // Metodo centralizado unico para bloquear + toda la limpieza asociada,
     // en una sola transaccion (Fase 9.4 § "centralizar toda la operacion").
@@ -81,6 +83,10 @@ public class BlockService {
         // availability ya excluye al blocker de lo que ve el target sin
         // depender de ningun UserMute.
         userMuteRepository.findByMuterIdAndMutedId(blockerId, targetId).ifPresent(userMuteRepository::delete);
+
+        // Distraerme: cierra cualquier invitacion o partida abierta entre los
+        // dos. Ambos ven "la partida terminó", sin saber por que.
+        gameRoomService.endRoomsBetween(blockerId, targetId);
     }
 
     // Desbloquear es SOLO borrar la fila -- a proposito no recrea el Follow,
