@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -49,6 +50,7 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
                 a.id = :currentUserId
                 OR p.visibility IN ('PUBLIC', 'FOLLOWERS_ONLY')
             )
+            AND (p.anonymous = false OR a.id = :currentUserId)
             AND NOT EXISTS (
                 SELECT 1 FROM UserBlock b
                 WHERE (b.blocker.id = :currentUserId AND b.blocked.id = a.id)
@@ -79,6 +81,7 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
             JOIN FETCH p.author a
             WHERE a.id = :authorId
             AND p.status = 'VISIBLE'
+            AND (p.anonymous = false OR :isOwner = true)
             AND (
                 :isOwner = true
                 OR (
@@ -95,4 +98,34 @@ public interface PostRepository extends JpaRepository<Post, UUID> {
                                         @Param("canSeeFollowersOnly") boolean canSeeFollowersOnly,
                                         @Param("isOwner") boolean isOwner,
                                         Pageable pageable);
+
+    // V20: los anonimos de terceros nunca entran al feed de seguidores (ver
+    // findFeedForUser) ni al perfil del autor (findVisiblePostsByAuthor) --
+    // si lo hicieran, el anonimato seria debil (5 seguidores = facil de
+    // adivinar). Viven en este espacio propio, visible para cualquier usuario
+    // autenticado. Bloqueo bilateral y mute unilateral se aplican con el
+    // autor REAL, igual que en el feed. Sin gate de profileVisibility a
+    // proposito (ver PostAccessPolicy#canView). Sirve el indice parcial
+    // idx_posts_anonymous_created_at (V20).
+    @Query("""
+            SELECT p FROM Post p
+            JOIN FETCH p.author a
+            WHERE p.anonymous = true
+            AND p.status = 'VISIBLE'
+            AND NOT EXISTS (
+                SELECT 1 FROM UserBlock b
+                WHERE (b.blocker.id = :currentUserId AND b.blocked.id = a.id)
+                OR (b.blocker.id = a.id AND b.blocked.id = :currentUserId)
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM UserMute m
+                WHERE m.muter.id = :currentUserId AND m.muted.id = a.id
+            )
+            ORDER BY p.createdAt DESC
+            """)
+    Page<Post> findAnonymousFeed(@Param("currentUserId") UUID currentUserId, Pageable pageable);
+
+    // Limite diario de anonimos: cuenta TODOS (tambien los borrados), asi
+    // borrar y volver a publicar no esquiva el limite.
+    long countByAuthorIdAndAnonymousTrueAndCreatedAtAfter(UUID authorId, Instant since);
 }

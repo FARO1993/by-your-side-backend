@@ -1,5 +1,6 @@
 package com.byyourside.backend.report;
 
+import com.byyourside.backend.post.PostRepository;
 import com.byyourside.backend.report.dto.CreateReportRequest;
 import com.byyourside.backend.report.dto.ReportResponse;
 import com.byyourside.backend.report.dto.ResolveReportRequest;
@@ -23,6 +24,7 @@ public class ReportService {
 
     private final ReportRepository reportRepository;
     private final UserRepository userRepository;
+    private final PostRepository postRepository;
 
     @Transactional
     public ReportResponse createReport(UserPrincipal principal, CreateReportRequest request) {
@@ -38,12 +40,13 @@ public class ReportService {
                 .build();
 
         report = reportRepository.save(report);
-        return toResponse(report);
+        // Respuesta a QUIEN REPORTA: nunca con el autor del target (V20).
+        return toResponse(report, false);
     }
 
     public Page<ReportResponse> getPendingQueue(Pageable pageable) {
         return reportRepository.findPendingQueuePrioritized(pageable)
-                .map(this::toResponse);
+                .map(report -> toResponse(report, true));
     }
 
     @Transactional
@@ -67,10 +70,16 @@ public class ReportService {
         report.setReviewedAt(java.time.Instant.now());
 
         report = reportRepository.save(report);
-        return toResponse(report);
+        return toResponse(report, true);
     }
 
-    private ReportResponse toResponse(Report report) {
+    // forModeration=true solo desde las rutas con @PreAuthorize MODERATOR/ADMIN.
+    // Una query por reporte de tipo POST: la cola pagina de a 20, aceptable.
+    private ReportResponse toResponse(Report report, boolean forModeration) {
+        UUID targetAuthorId = forModeration && report.getTargetType() == ReportTargetType.POST
+                ? postRepository.findById(report.getTargetId()).map(post -> post.getAuthor().getId()).orElse(null)
+                : null;
+
         return new ReportResponse(
                 report.getId(),
                 report.getReporter().getId(),
@@ -81,7 +90,8 @@ public class ReportService {
                 report.getStatus().name(),
                 report.getReviewedBy() != null ? report.getReviewedBy().getId() : null,
                 report.getCreatedAt(),
-                report.getReviewedAt()
+                report.getReviewedAt(),
+                targetAuthorId
         );
     }
 }

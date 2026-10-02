@@ -43,6 +43,12 @@ public class CommentService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
         }
 
+        // V20: sin comentarios en anonimos (v1). Si el autor comentara su
+        // propio post, su nombre lo delataria. Se responde con Presencia/Escucha.
+        if (post.isAnonymous()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Comments are disabled on anonymous posts");
+        }
+
         User author = userRepository.findById(principal.getId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
 
@@ -65,6 +71,10 @@ public class CommentService {
 
         if (!postAccessPolicy.canView(principal.getId(), post)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Post not found");
+        }
+
+        if (post.isAnonymous()) {
+            return List.of();
         }
 
         return commentRepository.findVisibleCommentsByPostId(postId).stream()

@@ -32,6 +32,10 @@ public record PostResponse(
         long listeningCount,
         String currentUserResponseType,
         // Advertencia de contenido (V19). Adicion pura al final: no rompe contrato.
-        boolean contentWarning
+        boolean contentWarning,
+        // Post anonimo (V20). Si es true y quien mira no es el autor, `author`
+        // viaja en null y `followedByCurrentUser` en false (si no, revelaria
+        // que seguis a quien lo escribio).
+        boolean anonymous
 ) {
 }
