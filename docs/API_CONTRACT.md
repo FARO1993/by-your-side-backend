@@ -834,7 +834,8 @@ Sube un avatar a Cloudinary y actualiza el perfil propio.
   "presenceCount": 2,
   "listeningCount": 1,
   "currentUserResponseType": "HUG",
-  "contentWarning": false
+  "contentWarning": false,
+  "anonymous": false
 }
 ```
 `author` es un `UserSummary` (siempre esta misma forma en toda la API: `id`, `username`,
@@ -856,10 +857,17 @@ frontend lo muestra difuminado con "Tocá para leer". **No cambia quién puede v
 post** (eso sigue siendo `visibility`): es solo una indicación de cómo mostrarlo. Los
 posts anteriores a V19 viajan en `false`.
 
+**Posts anónimos (V20)**: `anonymous` es un campo nuevo (adición al final, no rompe
+contrato). En un post `anonymous: true`, **para cualquiera que no sea el autor**:
+`author` viaja en `null` y `followedByCurrentUser` en `false` (si no, revelaría que seguís
+a quien lo escribió). El autor ve su propio post con `author` completo. El autor real
+**siempre** queda guardado: bloqueos, silencios, el límite diario y la moderación
+funcionan con él. Ver § "Posts anónimos" más abajo.
+
 ### `POST /api/posts`
 - **Body** (`CreatePostRequest`):
   ```json
-  { "content": "máx 2000 chars, obligatorio", "visibility": "PUBLIC | FOLLOWERS_ONLY | PRIVATE (opcional, default PUBLIC)", "contentWarning": "boolean (opcional, default false)" }
+  { "content": "máx 2000 chars, obligatorio", "visibility": "PUBLIC | FOLLOWERS_ONLY | PRIVATE (opcional, default PUBLIC)", "contentWarning": "boolean (opcional, default false)", "anonymous": "boolean (opcional, default false)" }
   ```
 - **Response 201**: `PostResponse` recién creado (`presenceCount: 0`, `listeningCount: 0`,
   `currentUserResponseType: null`, `supportCount: 0`, `supportedByCurrentUser: false`).
@@ -890,6 +898,34 @@ Feed del usuario autenticado: posts propios + de quienes sigue, orden `createdAt
   que este es el único mecanismo que saca esos posts del feed. El autor sigue siendo un
   follower efectivo en todo lo demás (seguís pudiendo entrar a su perfil/posts
   directamente, ver § 2).
+
+### Posts anónimos (V20)
+- **Crear**: `POST /api/posts` con `"anonymous": true`. Solo `PUBLIC`: con otra
+  `visibility` responde `400`. **Límite: 3 por persona en 24 h móviles** (cuenta también
+  los borrados) → `429 Too Many Requests`. Publicar con nombre no tiene límite.
+- **Inmutable**: `anonymous` no se puede cambiar en `PATCH`, y un anónimo no puede pasar a
+  `FOLLOWERS_ONLY`/`PRIVATE` (`400`).
+- **Dónde aparecen**: solo en `GET /api/posts/anonymous` (abajo) y por acceso directo
+  (`GET /api/posts/{postId}`). **Nunca** en el feed de seguidores ni en el perfil del autor
+  (`GET /api/users/{id}/posts`), salvo para el propio autor (que los ve en su feed y en su
+  perfil, con su `author`).
+- **Visibilidad**: desligada del perfil del autor (un perfil `PRIVATE` no oculta sus
+  anónimos — aplicarlo filtraría información sobre quién lo escribió). Solo se respeta el
+  **bloqueo bilateral** con el autor real (`404` en acceso directo, excluido del espacio).
+- **Respuestas**: Presencia/Escucha sí (`PUT /api/posts/{id}/response`). **Comentarios
+  no** en la v1: `POST .../comments` → `400`, `GET .../comments` → `[]` (si el autor
+  comentara su propio post, su nombre lo delataría).
+- **Moderación**: `ReportResponse.targetAuthorId` (nuevo) trae el autor real de un post
+  reportado **solo** en `GET /api/reports/queue` y `PATCH /api/reports/{id}/resolve`
+  (MODERATOR/ADMIN). En la respuesta a quien reporta (`POST /api/reports`) viaja en `null`.
+
+### `GET /api/posts/anonymous`
+Espacio anónimo: todos los posts anónimos visibles, orden `createdAt DESC`, sin autor.
+- **Query params**: `page` (default `0`), `size` (default `20`).
+- **Response 200**: `Page<PostResponse>` (`author: null`, `anonymous: true`, salvo los
+  propios).
+- Excluye autores con bloqueo en cualquier dirección y autores silenciados por quien mira
+  (mismo criterio que el feed), siempre con el autor real.
 
 ### `GET /api/posts/{postId}`
 - **Response 200**: `PostResponse`.

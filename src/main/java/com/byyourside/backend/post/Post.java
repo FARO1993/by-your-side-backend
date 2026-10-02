@@ -47,6 +47,13 @@ public class Post {
     @Builder.Default
     private boolean contentWarning = false;
 
+    // Post anonimo (V20): el autor queda guardado pero la API no lo expone a
+    // terceros (ver PostService#toResponse). Inmutable despues de crear: no
+    // se puede "des-anonimizar" ni anonimizar algo ya publicado con nombre.
+    @Column(nullable = false, updatable = false)
+    @Builder.Default
+    private boolean anonymous = false;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 

@@ -43,6 +43,15 @@ public class PostController {
         return ResponseEntity.ok(postService.getFeed(principal, pageable));
     }
 
+    // Espacio anonimo (V20): todos los posts anonimos visibles, sin autor.
+    @GetMapping("/anonymous")
+    public ResponseEntity<Page<PostResponse>> getAnonymousFeed(@AuthenticationPrincipal UserPrincipal principal,
+                                                               @RequestParam(defaultValue = "0") int page,
+                                                               @RequestParam(defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        return ResponseEntity.ok(postService.getAnonymousFeed(principal, pageable));
+    }
+
     @PatchMapping("/{postId}")
     public ResponseEntity<PostResponse> updatePost(@AuthenticationPrincipal UserPrincipal principal,
                                                    @PathVariable UUID postId,
