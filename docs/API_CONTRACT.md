@@ -2065,7 +2065,7 @@ Para juegos que **persisten entre partidas** (hoy solo `GARDEN`): las jugadas de
 ### Decisiones de diseño explícitas
 
 - **Bloqueos.** Bloquear cierra cualquier invitación o partida abierta entre las dos personas (`UNAVAILABLE`) y no se puede volver a invitar. Ninguna de las dos ve la causa.
-- **No hay contenido libre.** Los juegos actuales no tienen texto. Dibujemos (trazos y texto libres) necesita soporte de reportes antes de sumarse a `GameType`.
+- **No hay contenido libre.** Ningún juego deja que una persona le mande a otra texto o dibujos libres: las jugadas son movimientos acotados (dar vuelta una carta, colocar una pieza, plantar o regar). Un juego de dibujo ("Dibujemos") se evaluó y **se descartó** (oct. 2026): permitiría mandar contenido que lastime antes de que un reporte llegue a revisarse. Antes de sumar un `GameType` nuevo, mantener esta regla.
 - **La charla al lado del juego** usa la conversación de chat existente; no hay un chat nuevo dentro de la sala.
 
 ## Formato de error
