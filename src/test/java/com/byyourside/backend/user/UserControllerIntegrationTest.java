@@ -24,6 +24,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.UUID;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -161,8 +162,8 @@ class UserControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bio").value("Building ByYourSide"))
                 // Ya no se puede poner una foto por URL: el campo se ignora.
-                .andExpect(jsonPath("$.avatarId").doesNotExist())
-                .andExpect(jsonPath("$.avatarUrl").doesNotExist())
+                .andExpect(jsonPath("$.avatarId").value(nullValue()))
+                .andExpect(jsonPath("$.avatarUrl").value(nullValue()))
                 .andExpect(jsonPath("$.username").value("facu"));
     }
 
@@ -428,7 +429,7 @@ class UserControllerIntegrationTest {
 
         setAvatar("{\"avatarId\": null}")
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.avatarId").doesNotExist());
+                .andExpect(jsonPath("$.avatarId").value(nullValue()));
     }
 
     @Test
@@ -437,7 +438,7 @@ class UserControllerIntegrationTest {
         setAvatar("{\"avatarId\": \"https://example.com/me.png\"}").andExpect(status().isBadRequest());
         setAvatar("{\"avatarId\": \"HOJA\"}").andExpect(status().isBadRequest());
         mockMvc.perform(get("/api/users/me").header("Authorization", "Bearer " + token))
-                .andExpect(jsonPath("$.avatarId").doesNotExist());
+                .andExpect(jsonPath("$.avatarId").value(nullValue()));
     }
 
     @Test
@@ -448,7 +449,7 @@ class UserControllerIntegrationTest {
         mockMvc.perform(multipart("/api/users/me/avatar")
                         .file(file)
                         .header("Authorization", "Bearer " + token))
-                .andExpect(status().is4xxClientError());
+                .andExpect(status().isMethodNotAllowed());
     }
 
     @Test
