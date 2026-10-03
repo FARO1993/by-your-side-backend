@@ -252,7 +252,7 @@ public class PostService {
                 author.getId(),
                 author.getUsername(),
                 author.getDisplayName(),
-                author.getAvatarUrl()
+                author.getAvatarId()
         );
 
         PostResponseCountProjection counts = countsByPost.get(post.getId());

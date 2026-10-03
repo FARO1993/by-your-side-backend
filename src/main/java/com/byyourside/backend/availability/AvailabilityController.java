@@ -77,14 +77,14 @@ public class AvailabilityController {
     private AvailabilityResponse toLegacyResponse(CompanionOfferingResponse offering, UserPrincipal principal) {
         User user = userRepository.findById(principal.getId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
-        UserSummary userSummary = new UserSummary(user.getId(), user.getUsername(), user.getDisplayName(), user.getAvatarUrl());
+        UserSummary userSummary = new UserSummary(user.getId(), user.getUsername(), user.getDisplayName(), user.getAvatarId());
         CompanionIntent intent = LegacyAvailabilityMapper.toCompanionIntent(OfferingType.valueOf(offering.type()));
         return new AvailabilityResponse(offering.id(), userSummary, intent.name(), offering.createdAt(), offering.expiresAt());
     }
 
     private AvailabilityResponse toLegacyResponse(CompanionCandidateProjection projection) {
         UserSummary userSummary = new UserSummary(
-                projection.getUserId(), projection.getUsername(), projection.getDisplayName(), projection.getAvatarUrl()
+                projection.getUserId(), projection.getUsername(), projection.getDisplayName(), projection.getAvatarId()
         );
         CompanionIntent intent = LegacyAvailabilityMapper.toCompanionIntent(OfferingType.valueOf(projection.getOfferingType()));
         return new AvailabilityResponse(projection.getOfferingId(), userSummary, intent.name(),

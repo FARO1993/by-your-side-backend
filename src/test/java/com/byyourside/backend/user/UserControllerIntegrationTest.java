@@ -7,7 +7,6 @@ import com.byyourside.backend.auth.AuthSessionRepository;
 import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequestRepository;
-import com.byyourside.backend.storage.ImageStorageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -67,9 +66,6 @@ class UserControllerIntegrationTest {
 
     @Autowired
     private EmailVerificationTokenRepository emailVerificationTokenRepository;
-
-    @MockBean
-    private ImageStorageService imageStorageService;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -164,7 +160,9 @@ class UserControllerIntegrationTest {
                         .content(updateBody))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bio").value("Building ByYourSide"))
-                .andExpect(jsonPath("$.avatarUrl").value("https://example.com/avatar.png"))
+                // Ya no se puede poner una foto por URL: el campo se ignora.
+                .andExpect(jsonPath("$.avatarId").doesNotExist())
+                .andExpect(jsonPath("$.avatarUrl").doesNotExist())
                 .andExpect(jsonPath("$.username").value("facu"));
     }
 
@@ -325,14 +323,8 @@ class UserControllerIntegrationTest {
     }
 
     @Test
-    void patch_doesNotLoseAvatarUrl_whenUpdatingOnlyDisplayName() throws Exception { // K
-        mockMvc.perform(patch("/api/users/me")
-                        .header("Authorization", "Bearer " + token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"avatarUrl": "https://example.com/avatar.png"}
-                                """))
-                .andExpect(status().isOk());
+    void patch_doesNotLoseAvatar_whenUpdatingOnlyDisplayName() throws Exception { // K
+        setAvatar("{\"avatarId\": \"luna\"}").andExpect(status().isOk());
 
         mockMvc.perform(patch("/api/users/me")
                         .header("Authorization", "Bearer " + token)
@@ -341,7 +333,7 @@ class UserControllerIntegrationTest {
                                 {"displayName": "Facundo R"}
                                 """))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.avatarUrl").value("https://example.com/avatar.png"));
+                .andExpect(jsonPath("$.avatarId").value("luna"));
     }
 
     @Test
@@ -422,31 +414,55 @@ class UserControllerIntegrationTest {
                 .andExpect(jsonPath("$.content[0].username").value("otro"));
     }
 
+    // ============================================================
+    // AVATARES ILUSTRADOS (sin fotos)
+    // ============================================================
+
     @Test
-    void shouldUpdateAvatar_whenValidImageUploaded() throws Exception {
-        when(imageStorageService.uploadUserAvatar(any(UUID.class), any()))
-                .thenReturn("https://res.cloudinary.com/demo/image/upload/avatars/fake.png");
-
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "avatar.png", "image/png", "fake-image-bytes".getBytes()
-        );
-
-        mockMvc.perform(multipart("/api/users/me/avatar")
-                        .file(file)
-                        .header("Authorization", "Bearer " + token))
+    void choosesAnAvatarFromTheCatalog_andCanGoBackToInitials() throws Exception {
+        setAvatar("{\"avatarId\": \"hoja\"}")
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.avatarUrl").value("https://res.cloudinary.com/demo/image/upload/avatars/fake.png"));
+                .andExpect(jsonPath("$.avatarId").value("hoja"));
+        mockMvc.perform(get("/api/users/me").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.avatarId").value("hoja"));
+
+        setAvatar("{\"avatarId\": null}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.avatarId").doesNotExist());
     }
 
     @Test
-    void shouldReturnBadRequest_whenFileIsNotAnImage() throws Exception {
-        MockMultipartFile file = new MockMultipartFile(
-                "file", "doc.txt", "text/plain", "not an image".getBytes()
-        );
+    void rejectsAnythingOutsideTheCatalog_includingUrls() throws Exception {
+        setAvatar("{\"avatarId\": \"dragon\"}").andExpect(status().isBadRequest());
+        setAvatar("{\"avatarId\": \"https://example.com/me.png\"}").andExpect(status().isBadRequest());
+        setAvatar("{\"avatarId\": \"HOJA\"}").andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/users/me").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.avatarId").doesNotExist());
+    }
 
+    @Test
+    void photosCanNoLongerBeUploaded() throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "avatar.png", "image/png", "fake-image-bytes".getBytes()
+        );
         mockMvc.perform(multipart("/api/users/me/avatar")
                         .file(file)
                         .header("Authorization", "Bearer " + token))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().is4xxClientError());
+    }
+
+    @Test
+    void choosingAnAvatarRequiresAuthentication() throws Exception {
+        mockMvc.perform(put("/api/users/me/avatar")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"avatarId\": \"sol\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions setAvatar(String body) throws Exception {
+        return mockMvc.perform(put("/api/users/me/avatar")
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
     }
 }

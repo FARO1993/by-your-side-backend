@@ -54,7 +54,7 @@ public interface CompanionOfferingRepository extends JpaRepository<CompanionOffe
                 u.id AS userId,
                 u.username AS username,
                 u.display_name AS displayName,
-                u.avatar_url AS avatarUrl,
+                u.avatar_id AS avatarId,
                 o.type AS offeringType,
                 o.created_at AS createdAt,
                 o.expires_at AS expiresAt

@@ -229,7 +229,7 @@ public class StatusService {
     private StatusResponse toResponse(Status status, long reactionCount, String reactedByCurrentUser) {
         User user = status.getUser();
         UserSummary userSummary = new UserSummary(
-                user.getId(), user.getUsername(), user.getDisplayName(), user.getAvatarUrl()
+                user.getId(), user.getUsername(), user.getDisplayName(), user.getAvatarId()
         );
 
         return new StatusResponse(

@@ -83,7 +83,6 @@ com.byyourside.backend
 ├── report          Report, ReportReason/Status/TargetType — moderación
 ├── security        JWT: JwtService, JwtAuthenticationFilter, UserPrincipal, CustomUserDetailsService
 ├── status          "Estado de ánimo": Status, StatusMood, StatusReaction, StatusReactionType
-├── storage         Cloudinary: ImageStorageService (interfaz) + CloudinaryImageStorageService
 ├── user            User, UserRole, UserStatus, ProfileVisibility, ProfileAccessPolicy
 │                   (Fase 9.1) — entidad central, referenciada por casi todo
 └── websocket       WebSocketConfig, StompAuthChannelInterceptor
@@ -997,7 +996,7 @@ nuevo: CRUD, búsqueda por tipo, `/compatible`) para el detalle completo.
 - **Búsqueda por tipo — sin N+1**: `CompanionOfferingRepository.findRandomCandidatesByType`
   es una query nativa con `JOIN` directo a `users`, proyectada a
   `CompanionCandidateProjection` (interfaz con getters
-  `getOfferingId/getUserId/getUsername/getDisplayName/getAvatarUrl/getOfferingType/
+  `getOfferingId/getUserId/getUsername/getDisplayName/getAvatarId/getOfferingType/
   getCreatedAt/getExpiresAt`, mapeados por Spring Data desde los alias de columna de la
   query — `getOfferingId`/`getCreatedAt` se agregaron en B4B.3 específicamente para que el
   adapter legacy pueda armar su `AvailabilityResponse` histórico con datos reales, sin
@@ -1291,24 +1290,18 @@ implica: **agregar un valor nuevo a cualquier enum respaldado en DB no requiere
 migración**, pero si alguna vez se agrega un `CHECK` a mano, hay que recordar este
 antecedente.
 
-## Storage (Cloudinary)
+## Avatares (sin almacenamiento de imágenes)
 
-- Interfaz `ImageStorageService` con una única implementación real,
-  `CloudinaryImageStorageService` (sin implementación local/mock para dev — si las
-  credenciales de Cloudinary no están seteadas, el upload falla en runtime, no hay
-  fallback a disco).
-- Único caso de uso actual: avatar de usuario (`POST /api/users/me/avatar`). Transform
-  fija: 256×256, `crop=fill`, `gravity=face`, carpeta `avatars/`, `public_id = userId`
-  (upsert — no se acumulan versiones viejas del avatar en Cloudinary).
-- Límite de tamaño de archivo: 5MB, a nivel de `spring.servlet.multipart` (aplica a
-  cualquier multipart request del servlet container, aunque hoy solo hay un endpoint que
-  lo usa).
+- No hay subida de archivos ni storage de imágenes (Cloudinary se quitó en la migración
+  `V22`). Cada persona elige un avatar ilustrado del catálogo cerrado `AvatarCatalog`
+  (`users.avatar_id`, `null` = iniciales); los dibujos viven en el frontend.
+- Motivo: en una red de salud mental una foto identifica a la persona, puede ser
+  inapropiada y requiere moderación.
 
 ## Email (Resend)
 
 - Interfaz `EmailService` (paquete `email`) con una única implementación real,
-  `ResendEmailService`, sobre el SDK `com.resend:resend-java`. Mismo patrón que
-  `ImageStorageService`/Cloudinary: nada fuera del paquete `email` conoce Resend
+  `ResendEmailService`, sobre el SDK `com.resend:resend-java`. Nada fuera del paquete `email` conoce Resend
   directamente — `EmailVerificationService` solo depende de la interfaz.
 - Cuatro casos de uso actuales: `sendVerificationEmail` (tras registro y tras
   `resend-verification`), `sendWelcomeEmail` (tras la primera verificación exitosa),
@@ -1387,8 +1380,7 @@ un problema actual, pero es una limitación a tener en cuenta antes de escalar.
   `PORT`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET`,
   `JWT_ACCESS_EXPIRATION_MS` (Fase 1.5, reemplaza a `JWT_EXPIRATION_MS`),
   `REFRESH_TOKEN_EXPIRATION_MS` (Fase 1.5, nueva), `ADMIN_BOOTSTRAP_USERNAME`,
-  `CORS_ALLOWED_ORIGINS`, `APP_FRONTEND_URL`, `MAIL_FROM`, `RESEND_API_KEY`,
-  `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET`.
+  `CORS_ALLOWED_ORIGINS`, `APP_FRONTEND_URL`, `MAIL_FROM`, `RESEND_API_KEY`.
 - El comentario de heartbeat de WebSocket en el código menciona **Railway** como destino
   de despliegue de referencia (proxy intermedio que corta conexiones inactivas sin
   heartbeat).

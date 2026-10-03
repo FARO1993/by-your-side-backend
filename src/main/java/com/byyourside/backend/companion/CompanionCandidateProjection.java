@@ -24,7 +24,7 @@ public interface CompanionCandidateProjection {
 
     String getDisplayName();
 
-    String getAvatarUrl();
+    String getAvatarId();
 
     String getOfferingType();
 
