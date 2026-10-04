@@ -108,7 +108,7 @@ public class BlockService {
                         b.getBlocked().getId(),
                         b.getBlocked().getUsername(),
                         b.getBlocked().getDisplayName(),
-                        b.getBlocked().getAvatarUrl(),
+                        b.getBlocked().getAvatarId(),
                         b.getCreatedAt()
                 ));
     }

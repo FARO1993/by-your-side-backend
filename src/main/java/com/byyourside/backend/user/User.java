@@ -41,8 +41,10 @@ public class User {
     @Column(columnDefinition = "TEXT")
     private String bio;
 
-    @Column(name = "avatar_url")
-    private String avatarUrl;
+    // Uno de los avatares ilustrados de ByYourSide (ver AvatarCatalog). No se
+    // aceptan fotos ni URLs: null = se muestran las iniciales.
+    @Column(name = "avatar_id", length = 32)
+    private String avatarId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)

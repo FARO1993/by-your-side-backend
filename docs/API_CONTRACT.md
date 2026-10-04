@@ -23,8 +23,8 @@ observable) no requieren tocar esta documentación.
   WebSocket (`/ws`, ver `WEBSOCKET_CONTRACT.md`).
 - **Autenticación**: JWT Bearer. Header `Authorization: Bearer <token>` en cada request
   autenticado. Ver detalle en `FRONTEND_HANDOFF.md`.
-- **Content-Type**: `application/json` salvo el endpoint de subida de avatar
-  (`multipart/form-data`).
+- **Content-Type**: `application/json` en todos los endpoints (ya no hay subida de
+  archivos: los avatares son ilustraciones de un catálogo, ver `PUT /api/users/me/avatar`).
 - **IDs**: todos los recursos usan `UUID` (string en JSON, formato estándar con guiones).
 - **Timestamps**: `Instant` de Java, serializado por Jackson como ISO-8601 UTC
   (`"2026-09-25T14:30:00Z"`), no epoch millis.
@@ -489,7 +489,7 @@ Perfil completo del usuario autenticado, incluye email.
     "email": "persona@example.com",
     "displayName": "Juan Pérez",
     "bio": "texto o null",
-    "avatarUrl": "https://... o null",
+    "avatarId": "hoja o null",
     "role": "USER",
     "createdAt": "2026-01-01T00:00:00Z",
     "emailVerified": false,
@@ -515,7 +515,7 @@ Todos los campos son opcionales (solo se aplican los `!= null`; `null`/campo omi
 siempre significa "no tocar", para los 4 campos).
 - **Body** (`UpdateProfileRequest`):
   ```json
-  { "displayName": "máx 100 chars", "bio": "máx 500 chars", "avatarUrl": "string", "profileVisibility": "PUBLIC | PRIVATE" }
+  { "displayName": "máx 100 chars", "bio": "máx 500 chars", "profileVisibility": "PUBLIC | PRIVATE" }
   ```
   - `displayName` (Backend Debt B2 — validación nueva): opcional (`null`/omitido = no
     tocar). Si se envía un valor no-null, se recorta (`trim`) y **debe quedar no-vacío**
@@ -533,7 +533,8 @@ siempre significa "no tocar", para los 4 campos).
     ya usaba el resto de la API para "sin bio" (`null`, nunca `""`, ver perfil
     limitado/privado más abajo). Límite máximo sin cambios (`@Size(max = 500)`, ya
     existía).
-  - `avatarUrl`: sin cambios de validación en esta fase.
+  - `avatarUrl` ya no existe: si llega, se ignora. El avatar se elige con
+    `PUT /api/users/me/avatar` (solo ids del catálogo, nunca URLs).
   - `profileVisibility` (Fase 9.1): opcional, mismo criterio "`null` = no tocar" que el
     resto de los campos de este DTO. Un valor que no sea `PUBLIC`/`PRIVATE` responde
     `400 Bad Request` (body malformado — mismo manejo genérico que cualquier enum
@@ -546,8 +547,6 @@ siempre significa "no tocar", para los 4 campos).
     renderizar, como con cualquier texto de usuario en esta API.
 - **Response 200**: `UserResponse` (igual forma que `GET /me`) — refleja los valores
   **ya recortados/normalizados** que quedaron persistidos, no el string crudo enviado.
-- **Nota**: `avatarUrl` puede setearse aquí como URL arbitraria; el endpoint dedicado
-  de upload (abajo) es la vía recomendada para subir un archivo real vía Cloudinary.
 - **Identidad**: como todo `/me`, opera exclusivamente sobre el usuario del JWT — no hay
   (ni puede haber) forma de cambiar la privacidad de otra cuenta a través de este
   endpoint.
@@ -562,7 +561,7 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
     "username": "juanperez",
     "displayName": "Juan Pérez",
     "bio": "... o null",
-    "avatarUrl": "...",
+    "avatarId": "hoja o null",
     "createdAt": "2026-01-01T00:00:00Z",
     "followersCount": 12,
     "followingCount": 5,
@@ -606,7 +605,7 @@ Perfil de **otro** usuario (o el propio, funciona igual). Nunca incluye `email`.
   follower efectivo (`followState: "FOLLOWING"`) de un perfil `PRIVATE` **sí** ve la
   `bio` completa — antes de Fase 9.3 esto era imposible porque no existía el concepto
   de "follower aceptado" (todo follow era inmediato). El resto de los campos
-  (`username`, `displayName`, `avatarUrl`, `followersCount`, `followingCount`,
+  (`username`, `displayName`, `avatarId`, `followersCount`, `followingCount`,
   `followedByCurrentUser`, `profileVisibility`) se devuelven igual sin importar nada de
   esto — **ocultar contadores de seguidores es una decisión de producto separada, fuera
   de esta fase** (ver `BACKEND_ARCHITECTURE.md` § Privacidad, deuda explícita).
@@ -674,7 +673,7 @@ definición de "actual" para esta ruta.
   ```json
   {
     "id": "uuid",
-    "user": { "id": "uuid", "username": "...", "displayName": "...", "avatarUrl": "..." },
+    "user": { "id": "uuid", "username": "...", "displayName": "...", "avatarId": "hoja o null" },
     "mood": "WELL",
     "createdAt": "...",
     "expiresAt": "...",
@@ -764,7 +763,7 @@ Browse y búsqueda de personas, paginado.
   y valores no numéricos (`?size=abc`, `?page=x`). No hay clamp silencioso.
 - **Response 200**: `Page<DiscoverUserResponse>`:
   ```json
-  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarUrl": "...", "profileVisibility": "PUBLIC", "followState": "NONE", "available": false, "statusMood": null }
+  { "id": "uuid", "username": "...", "displayName": "...", "bio": "... o null", "avatarId": "hoja o null", "profileVisibility": "PUBLIC", "followState": "NONE", "available": false, "statusMood": null }
   ```
   **`available` (Backend Debt B5.2)**: `boolean` **no nullable** (siempre `true` o
   `false`). `true` si el usuario tiene un `CompanionOffering` activo ahora — exactamente la
@@ -802,18 +801,31 @@ Browse y búsqueda de personas, paginado.
   recíproca: que alguien te haya silenciado a vos no te saca de **su** discover ni del
   de nadie más, porque mute nunca filtra desde la perspectiva del muted.
 
-### `POST /api/users/me/avatar`
-Sube un avatar a Cloudinary y actualiza el perfil propio.
-- **Content-Type**: `multipart/form-data`.
-- **Form field**: `file` (el archivo de imagen).
-- **Validaciones**: archivo no vacío, `Content-Type` debe empezar con `image/`. Tamaño
-  máximo de request/archivo **5MB** (`spring.servlet.multipart.max-file-size`/`max-request-size`,
-  aplica a nivel de todo el servlet container, no solo este endpoint).
-- **Procesamiento**: Cloudinary recorta a 256×256, `crop=fill`, `gravity=face`, carpeta
-  `avatars`, `public_id` = `userId` (upsert: subir de nuevo pisa el avatar anterior).
-- **Response 200**: `UserResponse` con `avatarUrl` actualizado.
-- **Errores**: `400 Bad Request` (archivo vacío o no-imagen), `500 Internal Server Error`
-  (fallo de Cloudinary, mensaje genérico `"Failed to upload avatar"`).
+### `PUT /api/users/me/avatar`
+Elige uno de los **avatares ilustrados** de ByYourSide. **No se pueden subir fotos**: en
+una red de salud mental una foto identifica a la persona, puede ser inapropiada y hay que
+moderarla.
+- **Body**: `{ "avatarId": "hoja" }` o `{ "avatarId": null }` (vuelve a las iniciales).
+- **Catálogo** (`AvatarCatalog`, mismo listado en el frontend `src/lib/avatars.ts`):
+  `hoja`, `luna`, `sol`, `ola`, `montana`, `flor`, `nube`, `estrella`, `arbol`, `gota`,
+  `piedras`, `pluma`, `caracola`, `hongo`, `cactus`, `arcoiris`, `brote`, `faro`. Motivos
+  de naturaleza, sin caras.
+- **Response 200**: `UserResponse` con `avatarId` actualizado.
+- **Errores**: `400 Bad Request` (`"Unknown avatar"`) para cualquier valor fuera del
+  catálogo (incluidas URLs y mayúsculas).
+- **En todas las respuestas** donde aparece una persona (`UserSummary`, `UserResponse`,
+  perfiles, discover, bloqueados, silenciados, salas de juego…) viene `avatarId`
+  (`null` = iniciales).
+- **Transición**: hasta que el frontend use `avatarId`, esas respuestas también traen
+  `avatarUrl: null`. Se quita en el próximo PR.
+- **Fotos anteriores** (migración `V22`): la columna `avatar_url` se eliminó. Las imágenes
+  que estaban en Cloudinary (carpeta `avatars/`, `public_id = userId`) se borran una sola
+  vez con la Admin API, repitiendo hasta que no quede ninguna:
+  ```bash
+  curl -X DELETE -u "$CLOUDINARY_API_KEY:$CLOUDINARY_API_SECRET" \
+    "https://api.cloudinary.com/v1_1/$CLOUDINARY_CLOUD_NAME/resources/image/upload?prefix=avatars/"
+  ```
+  Después se pueden borrar las variables `CLOUDINARY_*` de Railway y la cuenta.
 
 ---
 
@@ -823,7 +835,7 @@ Sube un avatar a Cloudinary y actualiza el perfil propio.
 ```json
 {
   "id": "uuid",
-  "author": { "id": "uuid", "username": "...", "displayName": "...", "avatarUrl": "..." },
+  "author": { "id": "uuid", "username": "...", "displayName": "...", "avatarId": "hoja o null" },
   "content": "texto",
   "visibility": "PUBLIC",
   "createdAt": "...",
@@ -839,7 +851,7 @@ Sube un avatar a Cloudinary y actualiza el perfil propio.
 }
 ```
 `author` es un `UserSummary` (siempre esta misma forma en toda la API: `id`, `username`,
-`displayName`, `avatarUrl` — nunca incluye `email` ni `bio`).
+`displayName`, `avatarId` — nunca incluye `email` ni `bio`).
 
 **Cambio de contrato (Backend Debt B1)**: `presenceCount`, `listeningCount` y
 `currentUserResponseType` son campos nuevos (adición pura al final, no rompe contrato).
@@ -1839,7 +1851,7 @@ existe ningún endpoint para consultar eso, ver más abajo).
 - **Query params**: `page` (default `0`), `size` (default `20`).
 - **Response 200**: `Page<BlockedUserResponse>`:
   ```json
-  { "userId": "uuid", "username": "...", "displayName": "...", "avatarUrl": "...", "blockedAt": "..." }
+  { "userId": "uuid", "username": "...", "displayName": "...", "avatarId": "hoja o null", "blockedAt": "..." }
   ```
   DTO mínimo a propósito — **nunca incluye `email`**, mismo criterio que `UserSummary`.
 
@@ -1919,7 +1931,7 @@ existe ningún endpoint para consultar eso).
 - **Query params**: `page` (default `0`), `size` (default `20`).
 - **Response 200**: `Page<MutedUserResponse>`:
   ```json
-  { "userId": "uuid", "username": "...", "displayName": "...", "avatarUrl": "...", "mutedAt": "..." }
+  { "userId": "uuid", "username": "...", "displayName": "...", "avatarId": "hoja o null", "mutedAt": "..." }
   ```
   DTO mínimo a propósito — **nunca incluye `email`**, mismo criterio que
   `BlockedUserResponse`/`UserSummary`.
@@ -1983,8 +1995,8 @@ Ciclo de vida: `INVITED` → `ACTIVE` → `ENDED`. Una sala `ENDED` tiene `endRe
   "game": "MEMORY",
   "status": "INVITED",
   "endReason": null,
-  "host":  { "id": "uuid", "username": "facu", "displayName": "Facu", "avatarUrl": null },
-  "guest": { "id": "uuid", "username": "soumia", "displayName": "Soumia", "avatarUrl": null },
+  "host":  { "id": "uuid", "username": "facu", "displayName": "Facu", "avatarId": null },
+  "guest": { "id": "uuid", "username": "soumia", "displayName": "Soumia", "avatarId": null },
   "seed": 1234567,
   "eventCount": 0,
   "createdAt": "2026-10-02T18:00:00Z",

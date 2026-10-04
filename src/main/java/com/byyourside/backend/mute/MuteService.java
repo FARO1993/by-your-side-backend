@@ -77,7 +77,7 @@ public class MuteService {
                         m.getMuted().getId(),
                         m.getMuted().getUsername(),
                         m.getMuted().getDisplayName(),
-                        m.getMuted().getAvatarUrl(),
+                        m.getMuted().getAvatarId(),
                         m.getCreatedAt()
                 ));
     }

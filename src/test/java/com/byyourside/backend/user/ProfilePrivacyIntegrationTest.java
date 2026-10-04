@@ -8,7 +8,6 @@ import com.byyourside.backend.follow.Follow;
 import com.byyourside.backend.follow.FollowRepository;
 import com.byyourside.backend.follow.FollowRequestRepository;
 import com.byyourside.backend.notification.NotificationRepository;
-import com.byyourside.backend.storage.ImageStorageService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -70,9 +69,6 @@ class ProfilePrivacyIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
-
-    @MockBean
-    private ImageStorageService imageStorageService;
 
     private User mainUser;
     private String mainUserToken;

@@ -340,6 +340,6 @@ public class GameRoomService {
     }
 
     private static UserSummary summary(User user) {
-        return new UserSummary(user.getId(), user.getUsername(), user.getDisplayName(), user.getAvatarUrl());
+        return new UserSummary(user.getId(), user.getUsername(), user.getDisplayName(), user.getAvatarId());
     }
 }

@@ -16,6 +16,7 @@ import com.byyourside.backend.status.StatusService;
 import com.byyourside.backend.status.dto.StatusResponse;
 import com.byyourside.backend.user.dto.DiscoverUserResponse;
 import com.byyourside.backend.user.dto.PublicUserProfileResponse;
+import com.byyourside.backend.user.dto.SetAvatarRequest;
 import com.byyourside.backend.user.dto.UpdateProfileRequest;
 import com.byyourside.backend.user.dto.UserResponse;
 import jakarta.validation.Valid;
@@ -27,7 +28,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
 
 import java.util.UUID;
 
@@ -106,10 +106,11 @@ public class UserController {
         return ResponseEntity.ok(userService.discoverUsers(principal, q, page, size));
     }
 
-    @PostMapping(value = "/me/avatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<UserResponse> updateAvatar(@AuthenticationPrincipal UserPrincipal principal,
-                                                     @RequestParam("file") MultipartFile file) {
-        return ResponseEntity.ok(userService.updateAvatar(principal, file));
+    // Avatar ilustrado (sin fotos). Body: { "avatarId": "hoja" } o { "avatarId": null }.
+    @PutMapping("/me/avatar")
+    public ResponseEntity<UserResponse> setAvatar(@AuthenticationPrincipal UserPrincipal principal,
+                                                  @RequestBody SetAvatarRequest request) {
+        return ResponseEntity.ok(userService.setAvatar(principal, request.avatarId()));
     }
 
     // El blocker es SIEMPRE el usuario autenticado -- nunca se acepta un

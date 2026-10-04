@@ -125,7 +125,7 @@ public class CommentService {
                 author.getId(),
                 author.getUsername(),
                 author.getDisplayName(),
-                author.getAvatarUrl()
+                author.getAvatarId()
         );
 
         return new CommentResponse(

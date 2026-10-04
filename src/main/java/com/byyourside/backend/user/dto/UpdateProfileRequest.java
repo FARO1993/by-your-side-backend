@@ -11,8 +11,6 @@ public record UpdateProfileRequest(
         @Size(max = 500)
         String bio,
 
-        String avatarUrl,
-
         // Opcional: si viene null, no se toca la visibilidad actual (mismo
         // criterio "null = no tocar" que el resto de los campos de este DTO).
         ProfileVisibility profileVisibility

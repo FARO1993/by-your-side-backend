@@ -11,7 +11,6 @@ import com.byyourside.backend.follow.FollowState;
 import com.byyourside.backend.security.UserPrincipal;
 import com.byyourside.backend.status.StatusMood;
 import com.byyourside.backend.status.StatusService;
-import com.byyourside.backend.storage.ImageStorageService;
 import com.byyourside.backend.user.dto.DiscoverUserResponse;
 import com.byyourside.backend.user.dto.PublicUserProfileResponse;
 import com.byyourside.backend.user.dto.UpdateProfileRequest;
@@ -24,10 +23,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -41,7 +38,6 @@ public class UserService {
     private final UserRepository userRepository;
     private final FollowRepository followRepository;
     private final FollowRequestRepository followRequestRepository;
-    private final ImageStorageService imageStorageService;
     private final ProfileAccessPolicy profileAccessPolicy;
     private final UserBlockRepository userBlockRepository;
     private final UserMuteRepository userMuteRepository;
@@ -83,9 +79,6 @@ public class UserService {
         if (request.bio() != null) {
             String trimmed = request.bio().trim();
             user.setBio(trimmed.isEmpty() ? null : trimmed);
-        }
-        if (request.avatarUrl() != null) {
-            user.setAvatarUrl(request.avatarUrl());
         }
         if (request.profileVisibility() != null) {
             user.setProfileVisibility(request.profileVisibility());
@@ -174,7 +167,7 @@ public class UserService {
                 target.getUsername(),
                 target.getDisplayName(),
                 fullProfile ? target.getBio() : null,
-                target.getAvatarUrl(),
+                target.getAvatarId(),
                 target.getCreatedAt(),
                 followersCount,
                 followingCount,
@@ -270,7 +263,7 @@ public class UserService {
                 user.getUsername(),
                 user.getDisplayName(),
                 user.getProfileVisibility() == ProfileVisibility.PUBLIC ? user.getBio() : null,
-                user.getAvatarUrl(),
+                user.getAvatarId(),
                 user.getProfileVisibility().name(),
                 resolveDiscoverFollowState(user.getId(), followingIds, pendingIds).name(),
                 availableIds.contains(user.getId()),
@@ -308,31 +301,18 @@ public class UserService {
         return "%" + escaped + "%";
     }
 
+    // Elige uno de los avatares ilustrados; null vuelve a las iniciales.
+    // No hay subida de fotos: solo ids del catalogo cerrado.
     @Transactional
-    public UserResponse updateAvatar(UserPrincipal principal, MultipartFile file) {
-        if (file.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File is empty");
+    public UserResponse setAvatar(UserPrincipal principal, String avatarId) {
+        if (avatarId != null && !AvatarCatalog.isValid(avatarId)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Unknown avatar");
         }
-
-        String contentType = file.getContentType();
-        if (contentType == null || !contentType.startsWith("image/")) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File must be an image");
-        }
-
         User user = findByIdOrThrow(principal.getId());
-
-        String avatarUrl;
-        try {
-            avatarUrl = imageStorageService.uploadUserAvatar(user.getId(), file);
-        } catch (IOException e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Failed to upload avatar");
-        }
-
-        user.setAvatarUrl(avatarUrl);
+        user.setAvatarId(avatarId);
         user = userRepository.save(user);
         return toResponse(user);
     }
-
 
     private User findByIdOrThrow(java.util.UUID id) {
         return userRepository.findById(id)
@@ -346,7 +326,7 @@ public class UserService {
                 user.getEmail(),
                 user.getDisplayName(),
                 user.getBio(),
-                user.getAvatarUrl(),
+                user.getAvatarId(),
                 user.getRole().name(),
                 user.getCreatedAt(),
                 user.isEmailVerified(),
