@@ -129,7 +129,7 @@ public class FollowRequestService {
 
     private FollowRequestResponse toResponse(FollowRequest request, User otherUser) {
         UserSummary summary = new UserSummary(
-                otherUser.getId(), otherUser.getUsername(), otherUser.getDisplayName(), otherUser.getAvatarUrl());
+                otherUser.getId(), otherUser.getUsername(), otherUser.getDisplayName(), otherUser.getAvatarId());
 
         return new FollowRequestResponse(request.getId(), summary, request.getCreatedAt(), request.getStatus().name());
     }

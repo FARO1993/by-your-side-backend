@@ -109,7 +109,7 @@ public class NotificationService {
     private NotificationResponse toResponse(Notification notification) {
         User actor = notification.getActor();
         UserSummary actorSummary = new UserSummary(
-                actor.getId(), actor.getUsername(), actor.getDisplayName(), actor.getAvatarUrl()
+                actor.getId(), actor.getUsername(), actor.getDisplayName(), actor.getAvatarId()
         );
 
         return new NotificationResponse(

@@ -164,7 +164,7 @@ public class ChatService {
     private ConversationResponse toConversationResponse(Conversation conversation, UUID currentUserId, long unreadCount) {
         User other = conversation.otherParticipant(currentUserId);
         UserSummary otherSummary = new UserSummary(
-                other.getId(), other.getUsername(), other.getDisplayName(), other.getAvatarUrl()
+                other.getId(), other.getUsername(), other.getDisplayName(), other.getAvatarId()
         );
 
         return new ConversationResponse(
@@ -179,7 +179,7 @@ public class ChatService {
     private MessageResponse toMessageResponse(Message message) {
         User sender = message.getSender();
         UserSummary senderSummary = new UserSummary(
-                sender.getId(), sender.getUsername(), sender.getDisplayName(), sender.getAvatarUrl()
+                sender.getId(), sender.getUsername(), sender.getDisplayName(), sender.getAvatarId()
         );
 
         return new MessageResponse(

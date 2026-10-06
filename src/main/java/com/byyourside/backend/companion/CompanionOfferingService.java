@@ -186,7 +186,7 @@ public class CompanionOfferingService {
                 projection.getUserId(),
                 projection.getUsername(),
                 projection.getDisplayName(),
-                projection.getAvatarUrl()
+                projection.getAvatarId()
         );
         return new CompanionCandidateResponse(user, projection.getOfferingType(), projection.getExpiresAt());
     }
