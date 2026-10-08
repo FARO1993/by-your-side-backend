@@ -245,7 +245,7 @@ Dos controles de privacidad, más un flujo de solicitudes que los conecta.
   `visibility` al crear.
 - **Cómo cambiar la privacidad del perfil**: `PATCH /api/users/me` con
   `{ "profileVisibility": "PRIVATE" }` (o `"PUBLIC"`). Mismo endpoint que ya se usa para
-  editar `displayName`/`bio`/`avatarUrl` — no hay un endpoint separado. Un valor
+  editar `displayName`/`bio` — no hay un endpoint separado (el avatar va por `PUT /api/users/me/avatar`). Un valor
   distinto de esos dos responde `400`.
 
 ### ⚠️ Breaking change de comportamiento (Fase 9.3): seguir ya no es siempre inmediato
@@ -331,7 +331,7 @@ request/response/errores — acá solo la guía de UX.
   existiera (ver abajo), así que no hace falta ni es posible distinguir ese caso en la UI.
 - **Pantalla "Usuarios bloqueados"** (nueva, típicamente colgada de una sección de
   privacidad/ajustes): `GET /api/users/me/blocked`, paginado, con
-  `{ userId, username, displayName, avatarUrl, blockedAt }` — sin email. Cada fila
+  `{ userId, username, displayName, avatarId, blockedAt }` — sin email. Cada fila
   debería ofrecer "Desbloquear" (`DELETE /api/users/{userId}/block`).
 - **Qué pasa al bloquear a alguien** (todo esto ocurre automáticamente en el backend, el
   frontend solo necesita reflejarlo la próxima vez que pida esos datos, no hace falta
@@ -396,7 +396,7 @@ Bloqueo (sección anterior), no esto.
   silenció se ve exactamente igual que el de cualquier otra persona.
 - **Pantalla "Usuarios silenciados"** (nueva, típicamente junto a "Usuarios bloqueados"
   en la misma sección de privacidad/ajustes): `GET /api/users/me/muted`, paginado, con
-  `{ userId, username, displayName, avatarUrl, mutedAt }` — sin email. Cada fila debería
+  `{ userId, username, displayName, avatarId, mutedAt }` — sin email. Cada fila debería
   ofrecer "Dejar de silenciar" (`DELETE /api/users/{userId}/mute`).
 - **Qué pasa al silenciar a alguien** (todo esto ocurre automáticamente en el backend, el
   frontend solo necesita reflejarlo la próxima vez que pida esos datos):
@@ -509,7 +509,7 @@ de respuestas específicamente.
 ## Status directo + edición de perfil (Backend Debt B2)
 
 ### Edición de perfil — `PATCH /api/users/me`
-Este endpoint **ya existía y ya persistía de verdad** `displayName`/`bio`/`avatarUrl`/
+Este endpoint **ya existía y ya persistía de verdad** `displayName`/`bio`/
 `profileVisibility` antes de esta fase — lo nuevo acá es la validación de texto. Si el
 frontend ya lo integraba, revisar los dos puntos siguientes por cambios de contrato:
 
@@ -531,9 +531,9 @@ frontend ya lo integraba, revisar los dos puntos siguientes por cambios de contr
   interpolar texto; el riesgo real está solo si en algún punto se usa
   `dangerouslySetInnerHTML` u equivalente con estos campos, lo cual no debería hacerse).
 - **Campos que NO se pueden modificar vía este endpoint**: `username`, `email`, `role`,
-  `emailVerified`/`emailVerifiedAt`, `createdAt`, `id`. `avatarUrl` técnicamente acepta
-  cualquier string acá, pero la vía real para subir un archivo sigue siendo
-  `POST /api/users/me/avatar` (`multipart/form-data`) — sin cambios.
+  `emailVerified`/`emailVerifiedAt`, `createdAt`, `id` ni el avatar. El avatar es uno de
+  los ilustrados del catálogo y se elige con `PUT /api/users/me/avatar`
+  (`{ "avatarId": "hoja" }`); no hay subida de fotos.
 - **No usar `localStorage`** como fuente de verdad para el perfil editado — el mismo
   criterio que ya aplica al resto de la API: `GET /api/users/me` después del `PATCH` es
   la fuente real.
@@ -703,7 +703,7 @@ Resumen de superficie por dominio:
 
 ## Contratos importantes a tener presentes
 
-- **`UserSummary`** (`{ id, username, displayName, avatarUrl }`) es la forma que se
+- **`UserSummary`** (`{ id, username, displayName, avatarId }`) es la forma que se
   repite en *todas* las respuestas que embeben "un usuario dentro de otra cosa" (autor
   de post/comment, actor de notificación, otro participante de un chat, etc.) — nunca
   trae `email` ni `bio`. Conviene tipar esto una sola vez en el frontend y reusarlo.
@@ -867,7 +867,7 @@ Cursor, no hallazgos confirmados de ausencia:
   3. `GET /api/companion/offering/compatible` — usa tu Need activo internamente (nunca lo
      devuelve) y trae hasta 10 candidatos compatibles, en orden aleatorio:
      ```json
-     [{ "user": { "id": "...", "username": "...", "displayName": "...", "avatarUrl": "..." },
+     [{ "user": { "id": "...", "username": "...", "displayName": "...", "avatarId": "hoja" },
         "offeringType": "LISTEN", "expiresAt": "..." }]
      ```
      Sin Need activo → `200` con **lista vacía** (nunca `404`).
