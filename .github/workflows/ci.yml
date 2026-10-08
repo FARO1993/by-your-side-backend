@@ -31,6 +31,32 @@ jobs:
       - name: Run tests
         run: mvn clean verify -B
 
+      # Si algo falla, cada test roto queda como anotación del job (se ve en el
+      # PR y por la API, sin bajar los logs).
+      - name: Annotate failed tests
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+
+          def esc_msg(text):
+              return text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+
+          def esc_prop(text):
+              return esc_msg(text).replace(':', '%3A').replace(',', '%2C')
+
+          for path in glob.glob('target/surefire-reports/TEST-*.xml'):
+              for case in ET.parse(path).getroot().iter('testcase'):
+                  for kind in ('failure', 'error'):
+                      node = case.find(kind)
+                      if node is None:
+                          continue
+                      detail = (node.get('message') or node.text or kind).strip()[:600]
+                      title = f"{case.get('classname', '').split('.')[-1]}.{case.get('name')}"
+                      print(f"::error title={esc_prop(title)}::{esc_msg(detail)}")
+          PY
+
       # Publica el detalle de cada test (también en el resumen del job), así
       # cuando algo falla se ve cuál fue sin bajar los logs.
       - name: Publish test results
