@@ -163,7 +163,7 @@ class UserControllerIntegrationTest {
                 .andExpect(jsonPath("$.bio").value("Building ByYourSide"))
                 // Ya no se puede poner una foto por URL: el campo se ignora.
                 .andExpect(jsonPath("$.avatarId").value(nullValue()))
-                .andExpect(jsonPath("$.avatarUrl").value(nullValue()))
+                .andExpect(jsonPath("$.avatarUrl").doesNotExist())
                 .andExpect(jsonPath("$.username").value("facu"));
     }
 
