@@ -816,8 +816,8 @@ moderarla.
 - **En todas las respuestas** donde aparece una persona (`UserSummary`, `UserResponse`,
   perfiles, discover, bloqueados, silenciados, salas de juego…) viene `avatarId`
   (`null` = iniciales).
-- **Transición**: hasta que el frontend use `avatarId`, esas respuestas también traen
-  `avatarUrl: null`. Se quita en el próximo PR.
+- `avatarUrl` ya no existe en ninguna respuesta (el campo de transición se quitó cuando
+  el frontend pasó a `avatarId`).
 - **Fotos anteriores** (migración `V22`): la columna `avatar_url` se eliminó. Las imágenes
   que estaban en Cloudinary (carpeta `avatars/`, `public_id = userId`) se borran una sola
   vez con la Admin API, repitiendo hasta que no quede ninguna:
