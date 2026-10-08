@@ -113,7 +113,7 @@ en una conversación donde el usuario conectado es el destinatario.
 {
   "id": "uuid",
   "conversationId": "uuid",
-  "sender": { "id": "uuid", "username": "...", "displayName": "...", "avatarUrl": "..." },
+  "sender": { "id": "uuid", "username": "...", "displayName": "...", "avatarId": "hoja" },
   "content": "texto",
   "read": false,
   "createdAt": "2026-09-25T14:30:00Z"
@@ -137,7 +137,7 @@ del de REST:
 ```json
 {
   "id": "uuid",
-  "actor": { "id": "uuid", "username": "...", "displayName": "...", "avatarUrl": "..." },
+  "actor": { "id": "uuid", "username": "...", "displayName": "...", "avatarId": "hoja" },
   "type": "NEW_FOLLOWER",
   "postId": "uuid o null",
   "statusId": "uuid o null",
